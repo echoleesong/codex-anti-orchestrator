@@ -19,7 +19,7 @@ This document defines the security boundaries, operational constraints, and safe
 
 - **Orchestrator State Directory**: All runtime task execution, metadata, and temporary Git worktrees reside strictly outside the target repository under the orchestrator state directory (e.g. `~/.codex-anti-orchestrator/worktrees/<task-id>` or `$XDG_STATE_HOME/codex-anti-orchestrator/worktrees/<task-id>`).
 - **Zero In-Repo Pollution**: The target repository directory remains clean, with no temporary subdirectories, untracked generated files, or local Git lock contention.
-- **State Preservation**: When a task enters `AWAITING_HUMAN_APPROVAL`, `NEEDS_USER_DECISION`, or `FAILED`, the worktree is preserved in the state directory for inspection and debugging before explicit cleanup on `COMPLETED` or `ABORTED`.
+- **State Preservation**: When a task enters `AWAITING_HUMAN_APPROVAL`, `NEEDS_USER_DECISION`, `AWAITING_HUMAN_OVERRIDE`, or `FAILED`, the worktree is preserved in the state directory for inspection and debugging before explicit cleanup on `COMPLETED` or `ABORTED`.
 
 ### 2.2 Minimal GitHub CLI (`gh`) Permissions
 
@@ -30,7 +30,10 @@ This document defines the security boundaries, operational constraints, and safe
 ### 2.3 Strict Prohibition of Auto-Merge & Auto-Deploy
 
 - **No Auto-Merge**: The daemon and review agents are strictly prohibited from executing `gh pr merge`, fast-forwarding `main`, or bypassing branch protection rules.
-- **No Auto-Deploy**: The pipeline stops at `AWAITING_HUMAN_APPROVAL` (for clean passes) or `NEEDS_USER_DECISION` (when blockers require human judgment). Deployment workflows must be triggered exclusively through established, human-approved CI/CD gates.
+- **Strict Separation of Approval States**:
+  - `AWAITING_HUMAN_APPROVAL`: Strictly reserved for 100% clean passes (all automated tests green + zero Codex review blocking issues).
+  - `AWAITING_HUMAN_OVERRIDE`: Explicitly flags unresolved risks or warnings when user manually overrides iteration limits. Never treated as clean or auto-mergeable.
+- **No Auto-Deploy**: The pipeline stops at human review states (`AWAITING_HUMAN_APPROVAL` or `AWAITING_HUMAN_OVERRIDE`). Deployment workflows must be triggered exclusively through established, human-approved CI/CD gates.
 
 ### 2.4 Token and Credential Safety
 

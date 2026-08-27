@@ -32,7 +32,10 @@ flowchart TD
         B -->|8. Issues found & cycles < max| D
         B -->|9. Clean review & all tests pass| G[Awaiting Human Approval]
         B -->|10. Blockers remain & cycles reached max| H[Needs User Decision]
-        G -->|11. Human merges PR manually| I[Completed]
+        H -->|11a. User overrides with known risks| J[Awaiting Human Override]
+        H -->|11b. User provides guidance & retries| D
+        G -->|12. Human merges PR manually| I[Completed]
+        J -->|13. Human manually merges with overrides| I
     end
 ```
 
@@ -122,4 +125,4 @@ npm run build
 ## 6. Documentation Index
 
 - [Security Model & Constraints](docs/security.md): Detailed external worktree isolation, token safety, read-only constraints, and permission boundaries.
-- [State Machine & Failure Handling](docs/state-machine.md): Task state definitions, `NEEDS_USER_DECISION` vs `AWAITING_HUMAN_APPROVAL`, retry backoff, and stop conditions.
+- [State Machine & Failure Handling](docs/state-machine.md): Task state definitions, `NEEDS_USER_DECISION` vs `AWAITING_HUMAN_APPROVAL` vs `AWAITING_HUMAN_OVERRIDE`, retry backoff, and stop conditions.
