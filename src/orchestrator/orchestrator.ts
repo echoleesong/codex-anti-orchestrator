@@ -8,10 +8,10 @@ import {
 import {
   DEFAULT_ALLOWED_BASE_DIR,
   generateSafeTaskId,
-  getAllowedBaseDir,
   getDefaultStateDir,
   getTaskBranchName,
   getTaskWorktreePath,
+  validateStateDirIsolation,
   validateTargetRepoPath,
 } from '../security/path-validator.js';
 import {
@@ -29,16 +29,20 @@ export class Orchestrator {
 
   constructor(options: { stateDir?: string; allowedBaseDir?: string } = {}) {
     this.stateDir = options.stateDir || getDefaultStateDir();
-    this.allowedBaseDir = options.allowedBaseDir || getAllowedBaseDir();
+    this.allowedBaseDir = options.allowedBaseDir || DEFAULT_ALLOWED_BASE_DIR;
   }
 
   getStateDir(): string {
     return this.stateDir;
   }
 
+  getAllowedBaseDir(): string {
+    return this.allowedBaseDir;
+  }
+
   /**
    * Creates a new orchestrated development task.
-   * Enforces path safety, git cleanliness, and isolated external worktrees.
+   * Enforces path safety, state isolation, git cleanliness, and isolated external worktrees.
    */
   async createTask(options: CreateTaskOptions): Promise<TaskRecord> {
     const executor = options.executor || defaultExecutor;
@@ -52,21 +56,32 @@ export class Orchestrator {
     }
     const targetRepoPath = pathCheck.resolvedPath;
 
-    // 2. Validate Git Repository
+    // 2. Validate State Directory Isolation (must be outside target repository)
+    const stateIsolationCheck = validateStateDirIsolation(stateDir, targetRepoPath);
+    if (!stateIsolationCheck.valid) {
+      throw new Error(`Invalid state directory isolation: ${stateIsolationCheck.error}`);
+    }
+
+    // 3. Validate Git Repository
     const isRepo = await isGitRepository(targetRepoPath, executor);
     if (!isRepo) {
       throw new Error(`Directory is not a valid Git repository: ${targetRepoPath}`);
     }
 
-    // 3. Inspect Git Lockfile (NEVER auto-delete lock files)
+    // 4. Inspect Git Lockfile (Fail fast if locked or if check cannot be completed; NEVER auto-delete lock files)
     const lockCheck = await checkGitLockfile(targetRepoPath, executor);
+    if (lockCheck.error) {
+      throw new Error(
+        `Failed to complete Git lockfile check: ${lockCheck.error}. Automated task creation halted.`
+      );
+    }
     if (lockCheck.locked) {
       throw new Error(
         `Git repository lock detected: ${lockCheck.details}. Automated task creation halted. Please resolve the lock manually.`
       );
     }
 
-    // 4. Validate Git Cleanliness
+    // 5. Validate Git Cleanliness
     const cleanlinessCheck = await checkGitCleanliness(targetRepoPath, executor);
     if (!cleanlinessCheck.clean) {
       throw new Error(
@@ -74,7 +89,7 @@ export class Orchestrator {
       );
     }
 
-    // 5. Generate Sanitized IDs and Paths
+    // 6. Generate Sanitized IDs and Paths
     const taskId = generateSafeTaskId(options.prompt);
     const baseBranch = options.baseBranch || (await getCurrentBranch(targetRepoPath, executor));
     const taskBranch = getTaskBranchName(taskId);
@@ -112,7 +127,7 @@ export class Orchestrator {
     });
     await saveTaskState(stateDir, task);
 
-    // 6. Create Isolated External Worktree
+    // 7. Create Isolated External Worktree
     const worktreeRes = await createWorktree(
       targetRepoPath,
       worktreePath,
@@ -130,9 +145,9 @@ export class Orchestrator {
       throw new Error(`Failed to create worktree: ${worktreeRes.error}`);
     }
 
-    // Transition WORKTREE_PREPARING -> AGY_DEVELOPING
-    transitionTaskState(task, 'AGY_DEVELOPING', {
-      reason: 'Worktree ready. Prepared for agent development loop.',
+    // Transition WORKTREE_PREPARING -> WORKTREE_READY (Ready for Phase 3 agy development)
+    transitionTaskState(task, 'WORKTREE_READY', {
+      reason: 'External worktree allocated and validated. Ready for agent development invocation.',
     });
     await saveTaskState(stateDir, task);
 
@@ -200,7 +215,7 @@ export class Orchestrator {
     }
 
     if (task.state === 'FAILED') {
-      const targetState = task.diagnostics.resumeTargetState || 'WORKTREE_PREPARING';
+      const targetState = task.diagnostics.resumeTargetState || 'WORKTREE_READY';
       transitionTaskState(task, targetState, {
         reason: `Resuming task from previous failure in ${task.diagnostics.failedState || 'unknown state'}`,
       });

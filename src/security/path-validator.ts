@@ -5,13 +5,6 @@ import path from 'node:path';
 
 export const DEFAULT_ALLOWED_BASE_DIR = '/Users/lisong/code';
 
-export function getAllowedBaseDir(): string {
-  if (process.env.CODEX_ORCHESTRATOR_ALLOWED_BASE_DIR) {
-    return path.resolve(process.env.CODEX_ORCHESTRATOR_ALLOWED_BASE_DIR);
-  }
-  return DEFAULT_ALLOWED_BASE_DIR;
-}
-
 export function getDefaultStateDir(): string {
   if (process.env.CODEX_ORCHESTRATOR_STATE_DIR) {
     return path.resolve(process.env.CODEX_ORCHESTRATOR_STATE_DIR);
@@ -27,11 +20,11 @@ export interface PathValidationResult {
 
 /**
  * Validates that a target repository path resides strictly inside the allowed base directory (/Users/lisong/code).
- * Prevents directory traversal, symlink escapes, and root base path usage.
+ * Production enforces /Users/lisong/code; testing environments can pass explicit allowedBaseDir parameter.
  */
 export function validateTargetRepoPath(
   targetPath: string,
-  allowedBaseDir: string = getAllowedBaseDir()
+  allowedBaseDir: string = DEFAULT_ALLOWED_BASE_DIR
 ): PathValidationResult {
   if (!targetPath || typeof targetPath !== 'string') {
     return {
@@ -126,6 +119,90 @@ export function validateTargetRepoPath(
       error: `Path resolution error: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+}
+
+/**
+ * Validates that the state directory resides strictly outside the target repository.
+ * Prevents in-repo workspace pollution and symlink escapes.
+ */
+export function validateStateDirIsolation(
+  stateDir: string,
+  targetRepoPath: string
+): PathValidationResult {
+  if (!stateDir || typeof stateDir !== 'string') {
+    return {
+      valid: false,
+      resolvedPath: '',
+      error: 'State directory path must be a non-empty string.',
+    };
+  }
+
+  const resolvedState = path.resolve(stateDir);
+  const resolvedTarget = path.resolve(targetRepoPath);
+
+  // Resolve realpaths where possible
+  let realTarget = resolvedTarget;
+  try {
+    if (fs.existsSync(resolvedTarget)) {
+      realTarget = fs.realpathSync(resolvedTarget);
+    }
+  } catch {
+    // Keep resolvedTarget if realpath resolution fails
+  }
+
+  // If state dir exists, resolve realpath; otherwise resolve parent realpath
+  let realState = resolvedState;
+  try {
+    if (fs.existsSync(resolvedState)) {
+      realState = fs.realpathSync(resolvedState);
+    } else {
+      let cur = path.dirname(resolvedState);
+      while (cur !== path.dirname(cur) && !fs.existsSync(cur)) {
+        cur = path.dirname(cur);
+      }
+      if (fs.existsSync(cur)) {
+        const realParent = fs.realpathSync(cur);
+        const rel = path.relative(cur, resolvedState);
+        realState = path.resolve(realParent, rel);
+      }
+    }
+  } catch {
+    // Keep resolvedState if resolution fails
+  }
+
+  // Check 1: State directory cannot be equal to target repository
+  if (realState === realTarget || resolvedState === resolvedTarget) {
+    return {
+      valid: false,
+      resolvedPath: realState,
+      error: `State directory (${realState}) cannot be the target repository directory (${realTarget}).`,
+    };
+  }
+
+  // Check 2: State directory cannot be inside target repository
+  const targetPrefix = realTarget.endsWith(path.sep) ? realTarget : `${realTarget}${path.sep}`;
+  if (realState.startsWith(targetPrefix) || resolvedState.startsWith(targetPrefix)) {
+    return {
+      valid: false,
+      resolvedPath: realState,
+      error: `State directory (${realState}) cannot be located inside target repository (${realTarget}).`,
+    };
+  }
+
+  // Check 3: Target repository cannot be inside state directory
+  const statePrefix = realState.endsWith(path.sep) ? realState : `${realState}${path.sep}`;
+  if (realTarget.startsWith(statePrefix) || resolvedTarget.startsWith(statePrefix)) {
+    return {
+      valid: false,
+      resolvedPath: realState,
+      error: `Target repository (${realTarget}) cannot be located inside state directory (${realState}).`,
+    };
+  }
+
+  return {
+    valid: true,
+    resolvedPath: realState,
+  };
 }
 
 /**

@@ -13,6 +13,7 @@ export interface LockfileResult {
   locked: boolean;
   lockPath?: string;
   details?: string;
+  error?: string;
 }
 
 export interface WorktreeResult {
@@ -59,6 +60,7 @@ export async function checkGitCleanliness(
 /**
  * Inspects repository for any active Git lock files.
  * Strictly diagnostic: NEVER automatically deletes or alters lock files.
+ * If lock check cannot be completed, returns an explicit error to halt task creation.
  */
 export async function checkGitLockfile(
   repoPath: string,
@@ -69,12 +71,22 @@ export async function checkGitLockfile(
 
     // If .git is a file (e.g. in a worktree or submodule), or to be robust, resolve gitdir
     const gitDirRes = await executor('git', ['rev-parse', '--git-dir'], { cwd: repoPath });
-    if (gitDirRes.exitCode === 0 && gitDirRes.stdout.trim()) {
+    if (gitDirRes.exitCode !== 0) {
+      return {
+        locked: false,
+        error: `Failed to resolve Git directory via 'git rev-parse --git-dir': ${gitDirRes.stderr.trim() || 'command failed'}`,
+      };
+    }
+
+    if (gitDirRes.stdout.trim()) {
       gitDir = path.resolve(repoPath, gitDirRes.stdout.trim());
     }
 
     if (!fs.existsSync(gitDir)) {
-      return { locked: false };
+      return {
+        locked: false,
+        error: `Git directory does not exist: ${gitDir}`,
+      };
     }
 
     const commonLockFiles = [
@@ -98,16 +110,23 @@ export async function checkGitLockfile(
     // Check refs/heads/ for lock files
     const refsHeads = path.join(gitDir, 'refs', 'heads');
     if (fs.existsSync(refsHeads)) {
-      const entries = fs.readdirSync(refsHeads, { recursive: true });
-      for (const entry of entries) {
-        if (typeof entry === 'string' && entry.endsWith('.lock')) {
-          const lockFile = path.join(refsHeads, entry);
-          return {
-            locked: true,
-            lockPath: lockFile,
-            details: `Git ref lockfile found: ${lockFile}.`,
-          };
+      try {
+        const entries = fs.readdirSync(refsHeads, { recursive: true });
+        for (const entry of entries) {
+          if (typeof entry === 'string' && entry.endsWith('.lock')) {
+            const lockFile = path.join(refsHeads, entry);
+            return {
+              locked: true,
+              lockPath: lockFile,
+              details: `Git ref lockfile found: ${lockFile}.`,
+            };
+          }
         }
+      } catch (err) {
+        return {
+          locked: false,
+          error: `Failed to inspect refs directory for lockfiles: ${err instanceof Error ? err.message : String(err)}`,
+        };
       }
     }
 
@@ -115,7 +134,7 @@ export async function checkGitLockfile(
   } catch (err) {
     return {
       locked: false,
-      details: `Lock check error: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Lock check error: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }

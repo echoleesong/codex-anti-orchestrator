@@ -6,6 +6,7 @@ import {
   generateSafeTaskId,
   getTaskBranchName,
   getTaskWorktreePath,
+  validateStateDirIsolation,
   validateTargetRepoPath,
 } from '../src/security/path-validator.js';
 
@@ -76,5 +77,46 @@ describe('Path and Security Validation', () => {
 
     const worktreePath = getTaskWorktreePath(stateDir, taskId);
     expect(worktreePath).toBe('/custom/state/dir/worktrees/task-1740643200-feature-abc123');
+  });
+
+  describe('validateStateDirIsolation', () => {
+    it('should allow stateDir outside target repository', () => {
+      const repoDir = path.join(tempBaseDir, 'repo');
+      const stateDir = path.join(tempBaseDir, 'state');
+      fs.mkdirSync(repoDir, { recursive: true });
+      fs.mkdirSync(stateDir, { recursive: true });
+
+      const res = validateStateDirIsolation(stateDir, repoDir);
+      expect(res.valid).toBe(true);
+    });
+
+    it('should reject stateDir located inside target repository', () => {
+      const repoDir = path.join(tempBaseDir, 'repo');
+      const inRepoStateDir = path.join(repoDir, '.orchestrator-state');
+      fs.mkdirSync(inRepoStateDir, { recursive: true });
+
+      const res = validateStateDirIsolation(inRepoStateDir, repoDir);
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain('cannot be located inside target repository');
+    });
+
+    it('should reject stateDir equal to target repository', () => {
+      const repoDir = path.join(tempBaseDir, 'repo');
+      fs.mkdirSync(repoDir, { recursive: true });
+
+      const res = validateStateDirIsolation(repoDir, repoDir);
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain('cannot be the target repository directory');
+    });
+
+    it('should reject target repository located inside stateDir', () => {
+      const stateDir = path.join(tempBaseDir, 'state');
+      const insideRepo = path.join(stateDir, 'repo');
+      fs.mkdirSync(insideRepo, { recursive: true });
+
+      const res = validateStateDirIsolation(stateDir, insideRepo);
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain('cannot be located inside state directory');
+    });
   });
 });

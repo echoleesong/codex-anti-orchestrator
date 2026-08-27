@@ -6,7 +6,8 @@ import type { StateTransitionRecord, TaskRecord, TaskState } from '../types.js';
 export const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
   IDLE: ['INITIALIZING', 'ABORTED'],
   INITIALIZING: ['WORKTREE_PREPARING', 'FAILED', 'ABORTED'],
-  WORKTREE_PREPARING: ['AGY_DEVELOPING', 'FAILED', 'ABORTED'],
+  WORKTREE_PREPARING: ['WORKTREE_READY', 'FAILED', 'ABORTED'],
+  WORKTREE_READY: ['AGY_DEVELOPING', 'FAILED', 'ABORTED'],
   AGY_DEVELOPING: ['PR_CREATING', 'FAILED', 'ABORTED'],
   PR_CREATING: ['CODEX_REVIEWING', 'FAILED', 'ABORTED'],
   CODEX_REVIEWING: ['REVIEW_EVALUATING', 'FAILED', 'ABORTED'],
@@ -22,7 +23,14 @@ export const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
   AWAITING_HUMAN_APPROVAL: ['COMPLETED', 'ABORTED'],
   NEEDS_USER_DECISION: ['AGY_FIXING', 'AWAITING_HUMAN_OVERRIDE', 'ABORTED'],
   AWAITING_HUMAN_OVERRIDE: ['COMPLETED', 'ABORTED', 'AGY_FIXING'],
-  FAILED: ['INITIALIZING', 'WORKTREE_PREPARING', 'AGY_DEVELOPING', 'AGY_FIXING', 'ABORTED'],
+  FAILED: [
+    'INITIALIZING',
+    'WORKTREE_PREPARING',
+    'WORKTREE_READY',
+    'AGY_DEVELOPING',
+    'AGY_FIXING',
+    'ABORTED',
+  ],
   COMPLETED: [],
   ABORTED: [],
 };
@@ -64,16 +72,17 @@ export function transitionTaskState(
     );
   }
 
-  // Strict invariant: AWAITING_HUMAN_APPROVAL only allowed from REVIEW_EVALUATING on clean pass
+  // Strict invariant: AWAITING_HUMAN_APPROVAL only allowed from REVIEW_EVALUATING on strictly clean pass
   if (nextState === 'AWAITING_HUMAN_APPROVAL') {
     if (currentState !== 'REVIEW_EVALUATING') {
       throw new Error(
         `Illegal state transition: AWAITING_HUMAN_APPROVAL can only be entered from REVIEW_EVALUATING (current: ${currentState}).`
       );
     }
-    if (options.reviewClean === false || options.testsPass === false) {
+    // Both fields must be explicitly and strictly true. Missing (undefined/null) or false are strictly rejected.
+    if (options.reviewClean !== true || options.testsPass !== true) {
       throw new Error(
-        'Cannot transition to AWAITING_HUMAN_APPROVAL: automated tests must pass and Codex review must have zero blocking issues.'
+        'Cannot transition to AWAITING_HUMAN_APPROVAL: both reviewClean and testsPass must be strictly true (missing or false fields rejected).'
       );
     }
   }

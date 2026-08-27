@@ -44,6 +44,7 @@ export type TaskState =
   | 'IDLE'
   | 'INITIALIZING'
   | 'WORKTREE_PREPARING'
+  | 'WORKTREE_READY'
   | 'AGY_DEVELOPING'
   | 'PR_CREATING'
   | 'CODEX_REVIEWING'

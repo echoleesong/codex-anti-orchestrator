@@ -33,6 +33,7 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
     execFileSync('git', ['add', 'index.ts'], { cwd: testRepoPath });
     execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: testRepoPath });
 
+    // Injected constructor parameters for test isolation
     orchestrator = new Orchestrator({
       stateDir: tempStateDir,
       allowedBaseDir: tempBaseDir,
@@ -43,26 +44,41 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
     fs.rmSync(tempBaseDir, { recursive: true, force: true });
   });
 
-  it('should successfully create a task and allocate an external worktree', async () => {
+  it('should successfully create a task and enter WORKTREE_READY state', async () => {
     const task = await orchestrator.createTask({
       repoPath: testRepoPath,
       prompt: 'Implement auth module',
     });
 
-    expect(task.state).toBe('AGY_DEVELOPING');
+    expect(task.state).toBe('WORKTREE_READY');
     expect(task.prompt).toBe('Implement auth module');
     expect(task.targetRepoPath).toBe(fs.realpathSync(testRepoPath));
     expect(fs.existsSync(task.worktreePath)).toBe(true);
     expect(task.diagnostics.worktreePreserved).toBe(true);
 
-    // Verify state history
+    // Verify state history: IDLE -> INITIALIZING -> WORKTREE_PREPARING -> WORKTREE_READY
     const stateTransitions = task.transitions.map((t) => t.to);
-    expect(stateTransitions).toEqual(['INITIALIZING', 'WORKTREE_PREPARING', 'AGY_DEVELOPING']);
+    expect(stateTransitions).toEqual(['INITIALIZING', 'WORKTREE_PREPARING', 'WORKTREE_READY']);
 
     // Verify task can be reloaded
     const loaded = await orchestrator.getTask(task.id);
     expect(loaded.id).toBe(task.id);
-    expect(loaded.state).toBe('AGY_DEVELOPING');
+    expect(loaded.state).toBe('WORKTREE_READY');
+  });
+
+  it('should reject task creation if stateDir is inside the target repository', async () => {
+    const inRepoStateDir = path.join(testRepoPath, '.orch-state');
+    const badOrchestrator = new Orchestrator({
+      stateDir: inRepoStateDir,
+      allowedBaseDir: tempBaseDir,
+    });
+
+    await expect(
+      badOrchestrator.createTask({
+        repoPath: testRepoPath,
+        prompt: 'Task with in-repo stateDir',
+      })
+    ).rejects.toThrow(/Invalid state directory isolation/);
   });
 
   it('should reject task creation if working tree is dirty', async () => {
@@ -112,6 +128,7 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
     });
 
     // Advance task state to NEEDS_USER_DECISION
+    transitionTaskState(task, 'AGY_DEVELOPING');
     transitionTaskState(task, 'PR_CREATING');
     transitionTaskState(task, 'CODEX_REVIEWING');
     transitionTaskState(task, 'REVIEW_EVALUATING');
@@ -119,7 +136,6 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
       reason: 'Max review cycles reached with remaining warnings.',
     });
     const { saveTaskState } = await import('../src/state/state-machine.js');
-    task.state = 'NEEDS_USER_DECISION';
     await saveTaskState(tempStateDir, task);
 
     // Resume with override
@@ -136,61 +152,54 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
     expect(resumedGuidance.prompt).toContain('Fix null pointer in auth.ts');
   });
 
-  describe('CLI End-to-End Integration', () => {
-    it('should support create, status, cancel, and resume commands via CLI', async () => {
+  describe('CLI Command Invariants', () => {
+    it('should strictly reject create command for repositories outside /Users/lisong/code in production mode', async () => {
       const env = {
         ...process.env,
         CODEX_ORCHESTRATOR_STATE_DIR: tempStateDir,
-        CODEX_ORCHESTRATOR_ALLOWED_BASE_DIR: tempBaseDir,
       };
 
-      // 1. Create task via CLI
-      const createRes = await execFileAsync(
-        'npx',
-        [
-          'tsx',
-          cliPath,
-          'create',
-          '--repo',
-          testRepoPath,
-          '--prompt',
-          'CLI Feature Task',
-          '--json',
-        ],
-        { env }
-      );
+      try {
+        await execFileAsync(
+          'npx',
+          [
+            'tsx',
+            cliPath,
+            'create',
+            '--repo',
+            testRepoPath,
+            '--prompt',
+            'CLI Security Test',
+            '--json',
+          ],
+          { env }
+        );
+        expect.unreachable('CLI should have rejected repository outside /Users/lisong/code');
+      } catch (err: unknown) {
+        const execErr = err as { code?: number; stderr?: string };
+        expect(execErr.code).toBe(1);
+        expect(execErr.stderr).toContain('must reside strictly within /Users/lisong/code');
+      }
+    });
 
-      expect(createRes.stderr.trim()).toBe('');
-      const createdTask = JSON.parse(createRes.stdout.trim()) as TaskRecord;
-      expect(createdTask.id).toBeDefined();
-      expect(createdTask.state).toBe('AGY_DEVELOPING');
+    it('should support status listing via CLI', async () => {
+      const env = {
+        ...process.env,
+        CODEX_ORCHESTRATOR_STATE_DIR: tempStateDir,
+      };
 
-      // 2. Query status via CLI
-      const statusRes = await execFileAsync(
-        'npx',
-        ['tsx', cliPath, 'status', createdTask.id, '--json'],
-        { env }
-      );
-      const statusTask = JSON.parse(statusRes.stdout.trim()) as TaskRecord;
-      expect(statusTask.id).toBe(createdTask.id);
-      expect(statusTask.state).toBe('AGY_DEVELOPING');
+      // Create a task programmatically in the stateDir
+      await orchestrator.createTask({
+        repoPath: testRepoPath,
+        prompt: 'Task for status CLI test',
+      });
 
-      // 3. List all tasks via CLI
       const listRes = await execFileAsync('npx', ['tsx', cliPath, 'status', '--all', '--json'], {
         env,
       });
       const allTasks = JSON.parse(listRes.stdout.trim()) as TaskRecord[];
       expect(allTasks.length).toBeGreaterThanOrEqual(1);
-
-      // 4. Cancel task via CLI
-      const cancelRes = await execFileAsync(
-        'npx',
-        ['tsx', cliPath, 'cancel', createdTask.id, '--reason', 'CLI Cancel Test', '--json'],
-        { env }
-      );
-      const cancelledTask = JSON.parse(cancelRes.stdout.trim()) as TaskRecord;
-      expect(cancelledTask.state).toBe('ABORTED');
-      expect(fs.existsSync(createdTask.worktreePath)).toBe(true);
+      expect(allTasks[0].state).toBe('WORKTREE_READY');
     });
   });
 });

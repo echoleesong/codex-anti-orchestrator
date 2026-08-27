@@ -41,7 +41,7 @@ describe('State Machine & Transitions', () => {
     },
   });
 
-  it('should allow valid linear pipeline transitions', () => {
+  it('should allow valid linear pipeline transitions including WORKTREE_READY', () => {
     let task = createInitialTask();
 
     task = transitionTaskState(task, 'INITIALIZING');
@@ -49,6 +49,9 @@ describe('State Machine & Transitions', () => {
 
     task = transitionTaskState(task, 'WORKTREE_PREPARING');
     expect(task.state).toBe('WORKTREE_PREPARING');
+
+    task = transitionTaskState(task, 'WORKTREE_READY');
+    expect(task.state).toBe('WORKTREE_READY');
 
     task = transitionTaskState(task, 'AGY_DEVELOPING');
     expect(task.state).toBe('AGY_DEVELOPING');
@@ -105,23 +108,54 @@ describe('State Machine & Transitions', () => {
     expect(task.state).toBe('AGY_FIXING');
   });
 
-  it('should reject AWAITING_HUMAN_APPROVAL when review has blocking issues or tests fail', () => {
-    let task = createInitialTask();
-    task.state = 'REVIEW_EVALUATING';
+  it('should strictly reject AWAITING_HUMAN_APPROVAL when reviewClean or testsPass is missing or false', () => {
+    const makeTask = () => {
+      const t = createInitialTask();
+      t.state = 'REVIEW_EVALUATING';
+      return t;
+    };
 
+    // Missing all options
     expect(() => {
-      transitionTaskState(task, 'AWAITING_HUMAN_APPROVAL', {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {});
+    }).toThrow(/both reviewClean and testsPass must be strictly true/);
+
+    // Missing testsPass
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        reviewClean: true,
+      });
+    }).toThrow(/both reviewClean and testsPass must be strictly true/);
+
+    // Missing reviewClean
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        testsPass: true,
+      });
+    }).toThrow(/both reviewClean and testsPass must be strictly true/);
+
+    // False reviewClean
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
         reviewClean: false,
         testsPass: true,
       });
-    }).toThrow(/automated tests must pass and Codex review must have zero blocking issues/);
+    }).toThrow(/both reviewClean and testsPass must be strictly true/);
 
+    // False testsPass
     expect(() => {
-      transitionTaskState(task, 'AWAITING_HUMAN_APPROVAL', {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
         reviewClean: true,
         testsPass: false,
       });
-    }).toThrow(/automated tests must pass and Codex review must have zero blocking issues/);
+    }).toThrow(/both reviewClean and testsPass must be strictly true/);
+
+    // Strictly both true -> succeeds
+    const okTask = transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+      reviewClean: true,
+      testsPass: true,
+    });
+    expect(okTask.state).toBe('AWAITING_HUMAN_APPROVAL');
   });
 
   it('should reject invalid random state transitions', () => {

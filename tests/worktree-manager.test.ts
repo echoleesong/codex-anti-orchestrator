@@ -11,6 +11,7 @@ import {
   isGitRepository,
   removeWorktree,
 } from '../src/git/git-utils.js';
+import type { CommandExecutor } from '../src/types.js';
 
 describe('Git Worktree & Cleanliness Management', () => {
   let tempDir: string;
@@ -74,6 +75,17 @@ describe('Git Worktree & Cleanliness Management', () => {
 
     // Invariant verification: lockfile must NOT be deleted
     expect(fs.existsSync(lockFile)).toBe(true);
+  });
+
+  it('should return error when lockfile check cannot be completed instead of assuming unlocked', async () => {
+    const failingExecutor: CommandExecutor = async () => {
+      return { exitCode: 128, stdout: '', stderr: 'fatal: repository corrupted' };
+    };
+
+    const lockRes = await checkGitLockfile(testRepoPath, failingExecutor);
+    expect(lockRes.locked).toBe(false);
+    expect(lockRes.error).toBeDefined();
+    expect(lockRes.error).toContain('Failed to resolve Git directory');
   });
 
   it('should create an isolated external worktree in state directory outside repo', async () => {
