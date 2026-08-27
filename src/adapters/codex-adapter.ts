@@ -157,16 +157,12 @@ export function buildCodexReviewPrompt(
     diff?: string;
   } = {}
 ): string {
+  const baseBranch = options.baseBranch || 'main';
   const lines: string[] = [
     'You are performing an automated, strictly read-only code review of changes in this repository worktree.',
+    `Review the full code diff from the base branch ("${baseBranch}")${options.targetBranch ? ` to the task branch ("${options.targetBranch}")` : ''}.`,
   ];
 
-  if (options.baseBranch) {
-    lines.push(`Base target branch: "${options.baseBranch}".`);
-  }
-  if (options.targetBranch) {
-    lines.push(`Task branch to review: "${options.targetBranch}".`);
-  }
   if (options.diff) {
     lines.push('Code Diff to review:');
     lines.push('```diff');
@@ -211,6 +207,7 @@ export class CodexAdapter {
     const timeoutMs = options.timeoutMs ?? 120000; // 2 minutes default
 
     const prompt = buildCodexReviewPrompt({
+      baseBranch: options.baseBranch,
       targetBranch: options.prNumberOrBranch,
       diff: options.diff,
     });

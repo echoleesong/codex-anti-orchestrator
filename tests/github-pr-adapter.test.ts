@@ -230,5 +230,69 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
       expect(checks.success).toBe(true);
       expect(checks.allPassing).toBe(false);
     });
+
+    it('should handle pending PR checks correctly (allPassing: false)', async () => {
+      const mockExecutor: CommandExecutor = async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify([
+          { name: 'build', status: 'completed', conclusion: 'success' },
+          { name: 'test', status: 'in_progress', conclusion: '' },
+        ]),
+        stderr: '',
+      });
+
+      const adapter = new GitHubPRAdapter(mockExecutor);
+      const checks = await adapter.getPRChecks('/fake/worktree', 'anti/task-100');
+
+      expect(checks.success).toBe(true);
+      expect(checks.allPassing).toBe(false);
+      expect(checks.checks.length).toBe(2);
+    });
+
+    it('should handle cancelled PR checks correctly (allPassing: false)', async () => {
+      const mockExecutor: CommandExecutor = async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify([{ name: 'build', status: 'completed', conclusion: 'cancelled' }]),
+        stderr: '',
+      });
+
+      const adapter = new GitHubPRAdapter(mockExecutor);
+      const checks = await adapter.getPRChecks('/fake/worktree', 'anti/task-100');
+
+      expect(checks.success).toBe(true);
+      expect(checks.allPassing).toBe(false);
+    });
+
+    it('should fail closed when gh pr checks returns non-zero exit code', async () => {
+      const mockExecutor: CommandExecutor = async () => ({
+        exitCode: 1,
+        stdout: '',
+        stderr: 'gh: Could not resolve to a Repository',
+      });
+
+      const adapter = new GitHubPRAdapter(mockExecutor);
+      const checks = await adapter.getPRChecks('/fake/worktree', 'anti/task-100');
+
+      expect(checks.success).toBe(false);
+      expect(checks.allPassing).toBe(false);
+      expect(checks.error).toContain(
+        'Failed to get PR checks: gh: Could not resolve to a Repository'
+      );
+    });
+
+    it('should fail closed when gh pr checks returns empty array', async () => {
+      const mockExecutor: CommandExecutor = async () => ({
+        exitCode: 0,
+        stdout: '[]',
+        stderr: '',
+      });
+
+      const adapter = new GitHubPRAdapter(mockExecutor);
+      const checks = await adapter.getPRChecks('/fake/worktree', 'anti/task-100');
+
+      expect(checks.success).toBe(false);
+      expect(checks.allPassing).toBe(false);
+      expect(checks.error).toContain('No CI checks found');
+    });
   });
 });

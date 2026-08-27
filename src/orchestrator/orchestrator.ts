@@ -397,9 +397,10 @@ export class Orchestrator {
           }
 
           case 'CODEX_REVIEWING': {
-            // Invoke Codex review in read-only sandbox mode
+            // Invoke Codex review in read-only sandbox mode, explicitly checking diff against baseBranch
             const reviewResult = await codex.review({
               worktreePath: task.worktreePath,
+              baseBranch: task.baseBranch,
               prNumberOrBranch: task.taskBranch,
               executor,
             });
@@ -412,7 +413,7 @@ export class Orchestrator {
             });
             await saveTaskState(this.stateDir, task);
 
-            // Run automated tests in worktree
+            // 1. Run automated tests in worktree
             let testPassed = true;
             let testErrors: string | undefined;
 
@@ -428,23 +429,19 @@ export class Orchestrator {
 
             task.diagnostics.lastTestPassed = testPassed;
 
+            // 2. Query GitHub PR CI checks
+            const prTarget = task.metadata?.prNumber
+              ? String(task.metadata.prNumber)
+              : task.taskBranch;
+            const prChecks = await pr.getPRChecks(task.worktreePath, prTarget, executor);
+
             const reviewClean =
               reviewResult.verdict === 'APPROVE' && reviewResult.blockingIssues.length === 0;
+            const ciPassing = prChecks.success && prChecks.allPassing;
 
-            // Decision logic in REVIEW_EVALUATING:
-            if (testPassed && reviewClean) {
-              // 100% clean pass -> AWAITING_HUMAN_APPROVAL
-              transitionTaskState(task, 'AWAITING_HUMAN_APPROVAL', {
-                reason:
-                  'All automated tests passed and Codex review reported zero blocking issues.',
-                reviewClean: true,
-                testsPass: true,
-              });
-              await saveTaskState(this.stateDir, task);
-              return task;
-            }
+            // 3. Evaluation logic in REVIEW_EVALUATING:
 
-            // If not clean, check if we can fix or must stop for user decision
+            // Fail-safe fallback if Codex review requested decision or was malformed
             if (reviewResult.verdict === 'NEEDS_USER_DECISION') {
               transitionTaskState(task, 'NEEDS_USER_DECISION', {
                 reason: 'Codex review indicated NEEDS_USER_DECISION or unparseable output.',
@@ -453,6 +450,30 @@ export class Orchestrator {
               return task;
             }
 
+            // Fail-closed stop if PR CI checks are pending, failing, empty, or error (never auto-fix merely pending CI)
+            if (!ciPassing) {
+              transitionTaskState(task, 'NEEDS_USER_DECISION', {
+                reason: prChecks.error
+                  ? `GitHub PR CI checks failed or unavailable: ${prChecks.error}`
+                  : 'GitHub PR CI checks are pending, incomplete, or failed. Halting for user decision.',
+              });
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            // Invariant: 100% clean approval requires local tests passing, CI passing, AND clean Codex APPROVE
+            if (testPassed && reviewClean && ciPassing) {
+              transitionTaskState(task, 'AWAITING_HUMAN_APPROVAL', {
+                reason:
+                  'All automated tests passed, GitHub PR CI checks passed, and Codex review reported zero blocking issues.',
+                reviewClean: true,
+                testsPass: true,
+              });
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            // If not clean and review cycles exhausted -> NEEDS_USER_DECISION
             if (task.diagnostics.reviewCycles >= task.diagnostics.maxReviewCycles) {
               transitionTaskState(task, 'NEEDS_USER_DECISION', {
                 reason: `Reached maximum review cycles (${task.diagnostics.maxReviewCycles}) with unresolved issues.`,

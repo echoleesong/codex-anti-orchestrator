@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { CodexAdapter, parseCodexReviewOutput } from '../src/adapters/codex-adapter.js';
+import {
+  buildCodexReviewPrompt,
+  CodexAdapter,
+  parseCodexReviewOutput,
+} from '../src/adapters/codex-adapter.js';
 import type { CommandExecutor } from '../src/types.js';
 
 describe('OpenAI Codex CLI (codex) Adapter & Review Parser', () => {
@@ -165,6 +169,50 @@ Thanks!
       expect(res.verdict).toBe('NEEDS_USER_DECISION');
       expect(res.parsedCleanly).toBe(false);
       expect(res.summary).toContain('Codex review execution error');
+    });
+  });
+
+  describe('buildCodexReviewPrompt', () => {
+    it('should explicitly ask for full diff from base branch to task branch', () => {
+      const prompt = buildCodexReviewPrompt({
+        baseBranch: 'main',
+        targetBranch: 'anti/task-123',
+      });
+      expect(prompt).toContain(
+        'Review the full code diff from the base branch ("main") to the task branch ("anti/task-123").'
+      );
+      expect(prompt).toContain('strictly read-only code review');
+      expect(prompt).toContain('"verdict": "APPROVE" | "CHANGES_REQUIRED" | "NEEDS_USER_DECISION"');
+    });
+
+    it('should default baseBranch to main when omitted', () => {
+      const prompt = buildCodexReviewPrompt({
+        targetBranch: 'anti/task-456',
+      });
+      expect(prompt).toContain(
+        'Review the full code diff from the base branch ("main") to the task branch ("anti/task-456").'
+      );
+    });
+
+    it('should handle review prompt without target branch', () => {
+      const prompt = buildCodexReviewPrompt({
+        baseBranch: 'release-1.0',
+      });
+      expect(prompt).toContain('Review the full code diff from the base branch ("release-1.0").');
+    });
+
+    it('should embed diff fence when diff is provided', () => {
+      const prompt = buildCodexReviewPrompt({
+        baseBranch: 'develop',
+        targetBranch: 'anti/task-789',
+        diff: '--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-old\n+new',
+      });
+      expect(prompt).toContain(
+        'Review the full code diff from the base branch ("develop") to the task branch ("anti/task-789").'
+      );
+      expect(prompt).toContain('Code Diff to review:');
+      expect(prompt).toContain('```diff');
+      expect(prompt).toContain('+new');
     });
   });
 });

@@ -142,6 +142,7 @@ export interface CodexReviewResult {
 
 export interface CodexReviewOptions {
   worktreePath: string;
+  baseBranch?: string;
   diff?: string;
   prNumberOrBranch?: string;
   executor?: CommandExecutor;

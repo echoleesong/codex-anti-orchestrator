@@ -27,6 +27,15 @@ describe('Controlled State-Loop Execution & Transitions', () => {
     options: {
       codexVerdicts?: string[];
       testsPass?: boolean[];
+      prChecksStatus?:
+        | 'success'
+        | 'pending'
+        | 'failing'
+        | 'cancelled'
+        | 'error'
+        | 'malformed'
+        | 'empty'
+        | 'empty_array';
       agyFail?: boolean;
       pushFail?: boolean;
     } = {}
@@ -93,6 +102,72 @@ describe('Controlled State-Loop Execution & Transitions', () => {
             stdout: 'https://github.com/echoleesong/codex-anti-orchestrator/pull/99\n',
             stderr: '',
           };
+        }
+        if (args.includes('checks')) {
+          const prStatus = options.prChecksStatus ?? 'success';
+          if (prStatus === 'success') {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify([
+                { name: 'ci/build', status: 'completed', conclusion: 'success' },
+                { name: 'ci/test', status: 'completed', conclusion: 'success' },
+              ]),
+              stderr: '',
+            };
+          }
+          if (prStatus === 'pending') {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify([{ name: 'ci/build', status: 'in_progress', conclusion: '' }]),
+              stderr: '',
+            };
+          }
+          if (prStatus === 'failing') {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify([
+                { name: 'ci/build', status: 'completed', conclusion: 'failure' },
+              ]),
+              stderr: '',
+            };
+          }
+          if (prStatus === 'cancelled') {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify([
+                { name: 'ci/build', status: 'completed', conclusion: 'cancelled' },
+              ]),
+              stderr: '',
+            };
+          }
+          if (prStatus === 'error') {
+            return {
+              exitCode: 1,
+              stdout: '',
+              stderr: 'gh: Could not resolve to a Repository',
+            };
+          }
+          if (prStatus === 'malformed') {
+            return {
+              exitCode: 0,
+              stdout: 'Invalid JSON { pr checks',
+              stderr: '',
+            };
+          }
+          if (prStatus === 'empty') {
+            return {
+              exitCode: 0,
+              stdout: '   \n  ',
+              stderr: '',
+            };
+          }
+          if (prStatus === 'empty_array') {
+            return {
+              exitCode: 0,
+              stdout: '[]',
+              stderr: '',
+            };
+          }
         }
         if (args.includes('view') || args.includes('edit') || args.includes('comment')) {
           return { exitCode: 0, stdout: '{}', stderr: '' };
@@ -273,6 +348,182 @@ describe('Controlled State-Loop Execution & Transitions', () => {
     const task = await orchestrator.createTask({
       repoPath,
       prompt: 'Feature with malformed review',
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
+    expect(finishedTask.diagnostics.worktreePreserved).toBe(true);
+  });
+
+  it('should transition to NEEDS_USER_DECISION when PR checks are pending', async () => {
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE'],
+      testsPass: [true],
+      prChecksStatus: 'pending',
+    });
+
+    const orchestrator = new Orchestrator({
+      stateDir,
+      allowedBaseDir: tempDir,
+      executor: mock,
+    });
+
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Task with pending CI checks',
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
+    expect(finishedTask.diagnostics.worktreePreserved).toBe(true);
+    const lastTransition = finishedTask.transitions[finishedTask.transitions.length - 1];
+    expect(lastTransition.reason).toContain(
+      'GitHub PR CI checks are pending, incomplete, or failed'
+    );
+  });
+
+  it('should transition to NEEDS_USER_DECISION when PR checks are failing', async () => {
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE'],
+      testsPass: [true],
+      prChecksStatus: 'failing',
+    });
+
+    const orchestrator = new Orchestrator({
+      stateDir,
+      allowedBaseDir: tempDir,
+      executor: mock,
+    });
+
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Task with failing CI checks',
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
+    expect(finishedTask.diagnostics.worktreePreserved).toBe(true);
+  });
+
+  it('should transition to NEEDS_USER_DECISION when PR checks are cancelled', async () => {
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE'],
+      testsPass: [true],
+      prChecksStatus: 'cancelled',
+    });
+
+    const orchestrator = new Orchestrator({
+      stateDir,
+      allowedBaseDir: tempDir,
+      executor: mock,
+    });
+
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Task with cancelled CI checks',
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
+    expect(finishedTask.diagnostics.worktreePreserved).toBe(true);
+  });
+
+  it('should transition to NEEDS_USER_DECISION when PR checks are unavailable or return an error', async () => {
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE'],
+      testsPass: [true],
+      prChecksStatus: 'error',
+    });
+
+    const orchestrator = new Orchestrator({
+      stateDir,
+      allowedBaseDir: tempDir,
+      executor: mock,
+    });
+
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Task with unavailable CI checks',
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
+    expect(finishedTask.diagnostics.worktreePreserved).toBe(true);
+    const lastTransition = finishedTask.transitions[finishedTask.transitions.length - 1];
+    expect(lastTransition.reason).toContain('GitHub PR CI checks failed or unavailable');
+  });
+
+  it('should transition to NEEDS_USER_DECISION when PR checks output is malformed', async () => {
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE'],
+      testsPass: [true],
+      prChecksStatus: 'malformed',
+    });
+
+    const orchestrator = new Orchestrator({
+      stateDir,
+      allowedBaseDir: tempDir,
+      executor: mock,
+    });
+
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Task with malformed CI checks output',
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
+    expect(finishedTask.diagnostics.worktreePreserved).toBe(true);
+    const lastTransition = finishedTask.transitions[finishedTask.transitions.length - 1];
+    expect(lastTransition.reason).toContain('GitHub PR CI checks failed or unavailable');
+  });
+
+  it('should transition to NEEDS_USER_DECISION when PR checks output is empty', async () => {
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE'],
+      testsPass: [true],
+      prChecksStatus: 'empty',
+    });
+
+    const orchestrator = new Orchestrator({
+      stateDir,
+      allowedBaseDir: tempDir,
+      executor: mock,
+    });
+
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Task with empty CI checks output',
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
+    expect(finishedTask.diagnostics.worktreePreserved).toBe(true);
+  });
+
+  it('should transition to NEEDS_USER_DECISION when PR checks return an empty array', async () => {
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE'],
+      testsPass: [true],
+      prChecksStatus: 'empty_array',
+    });
+
+    const orchestrator = new Orchestrator({
+      stateDir,
+      allowedBaseDir: tempDir,
+      executor: mock,
+    });
+
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Task with empty array CI checks output',
     });
 
     const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
