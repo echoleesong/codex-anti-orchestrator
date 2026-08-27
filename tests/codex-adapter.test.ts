@@ -110,10 +110,12 @@ Thanks!
   });
 
   describe('CodexAdapter execution', () => {
-    it('should invoke codex in read-only sandbox mode and parse review results', async () => {
+    it('should construct arguments strictly matching the codex exec --sandbox read-only contract', async () => {
+      const executedFiles: string[] = [];
       const executedArgs: string[][] = [];
 
       const mockExecutor: CommandExecutor = async (file, args) => {
+        executedFiles.push(file);
         executedArgs.push(args);
         return {
           exitCode: 0,
@@ -135,15 +137,17 @@ Thanks!
 
       expect(res.verdict).toBe('APPROVE');
       expect(res.parsedCleanly).toBe(true);
-      expect(executedArgs.length).toBe(1);
+      expect(executedFiles.length).toBe(1);
+      expect(executedFiles[0]).toBe('codex');
 
       const args = executedArgs[0];
-      expect(args).toContain('review');
-      expect(args).toContain('--read-only');
-      expect(args).toContain('--format');
-      expect(args).toContain('json');
-      expect(args).toContain('--target');
-      expect(args).toContain('anti/task-123');
+      expect(args[0]).toBe('exec');
+      expect(args[1]).toBe('--sandbox');
+      expect(args[2]).toBe('read-only');
+      expect(typeof args[3]).toBe('string');
+      expect(args[3]).toContain('strictly read-only code review');
+      expect(args[3]).toContain('anti/task-123');
+      expect(args[3]).toContain('"verdict": "APPROVE"');
     });
 
     it('should fail safe to NEEDS_USER_DECISION when codex execution fails or crashes', async () => {

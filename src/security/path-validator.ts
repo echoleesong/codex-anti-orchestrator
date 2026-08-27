@@ -259,3 +259,78 @@ export function getTaskDir(stateDir: string, taskId: string): string {
   const sanitizedId = taskId.replace(/[^a-zA-Z0-9-_]/g, '');
   return path.join(path.resolve(stateDir), 'tasks', sanitizedId);
 }
+
+/**
+ * Validates whether a file path is prohibited from being staged to git.
+ * Enforces fail-closed protection against node_modules, secrets, tokens, state files, and build outputs.
+ */
+export function isProhibitedStagingPath(filePath: string): {
+  prohibited: boolean;
+  reason?: string;
+} {
+  if (!filePath || typeof filePath !== 'string') {
+    return { prohibited: true, reason: 'Empty path' };
+  }
+
+  const normalized = filePath.trim().replace(/\\/g, '/');
+  const baseName = path.basename(normalized).toLowerCase();
+
+  // 1. Block node_modules anywhere in the tree
+  if (
+    normalized === 'node_modules' ||
+    normalized.startsWith('node_modules/') ||
+    normalized.includes('/node_modules/')
+  ) {
+    return { prohibited: true, reason: 'node_modules cannot be staged' };
+  }
+
+  // 2. Block environment / secret files (allow .env.example)
+  if (baseName === '.env' || (baseName.startsWith('.env.') && baseName !== '.env.example')) {
+    return { prohibited: true, reason: 'Environment and secret files cannot be staged' };
+  }
+
+  // 3. Block private keys, credentials, tokens
+  if (
+    baseName.includes('credential') ||
+    baseName.includes('secret') ||
+    baseName.startsWith('id_rsa') ||
+    baseName.startsWith('id_ed25519') ||
+    baseName.endsWith('.pem') ||
+    baseName.endsWith('.pfx') ||
+    baseName.endsWith('.p12') ||
+    (baseName.endsWith('.key') && !baseName.endsWith('.d.ts'))
+  ) {
+    return { prohibited: true, reason: 'Credential/key files cannot be staged' };
+  }
+
+  // 4. Block orchestrator state paths
+  if (
+    normalized.includes('.codex-anti-orchestrator') ||
+    normalized.includes('orchestrator-state') ||
+    baseName === 'state.json'
+  ) {
+    return { prohibited: true, reason: 'Orchestrator state files cannot be staged' };
+  }
+
+  // 5. Block git internals
+  if (normalized === '.git' || normalized.startsWith('.git/')) {
+    return { prohibited: true, reason: 'Git internals cannot be staged' };
+  }
+
+  // 6. Block build artifacts
+  if (
+    normalized === 'dist' ||
+    normalized.startsWith('dist/') ||
+    normalized === 'coverage' ||
+    normalized.startsWith('coverage/')
+  ) {
+    return { prohibited: true, reason: 'Build artifacts cannot be staged' };
+  }
+
+  // 7. Block temporary files and locks
+  if (baseName.endsWith('.tmp') || baseName.endsWith('.swp') || baseName.endsWith('.bak')) {
+    return { prohibited: true, reason: 'Temporary editor/system files cannot be staged' };
+  }
+
+  return { prohibited: false };
+}

@@ -34,8 +34,13 @@ describe('Controlled State-Loop Execution & Transitions', () => {
     let codexCallCount = 0;
     let testCallCount = 0;
 
-    return async (file: string, args: string[]): Promise<ExecOutput> => {
+    return async (
+      file: string,
+      args: string[],
+      execOptions?: Record<string, unknown>
+    ): Promise<ExecOutput> => {
       const full = `${file} ${args.join(' ')}`;
+      const cwd = (execOptions?.cwd as string) || '';
 
       // Git checks
       if (full.includes('rev-parse --is-inside-work-tree')) {
@@ -48,6 +53,9 @@ describe('Controlled State-Loop Execution & Transitions', () => {
         return { exitCode: 0, stdout: 'main\n', stderr: '' };
       }
       if (full.includes('status --porcelain')) {
+        if (cwd.includes('worktrees')) {
+          return { exitCode: 0, stdout: 'M  src/feature.ts\n', stderr: '' };
+        }
         return { exitCode: 0, stdout: '', stderr: '' };
       }
       if (full.includes('worktree add')) {

@@ -116,8 +116,8 @@ export class AgyAdapter {
 
     this.validateWorktree(options.worktreePath, options.targetRepoPath);
 
-    // Strict command invariant: uses argument array only, enforces --sandbox flag
-    const args = ['--sandbox', '-p', options.prompt];
+    // Strict command invariant: uses argument array only, explicitly chooses --sandbox and --edit mode
+    const args = ['--sandbox', '--edit', '-p', options.prompt];
 
     const result = await executor('agy', args, {
       cwd: options.worktreePath,

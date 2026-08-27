@@ -166,7 +166,7 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
       ]);
     });
 
-    it('should parse PR checks status accurately', async () => {
+    it('should parse PR checks status accurately when all pass', async () => {
       const mockExecutor: CommandExecutor = async () => ({
         exitCode: 0,
         stdout: JSON.stringify([
@@ -182,6 +182,53 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
       expect(checks.success).toBe(true);
       expect(checks.allPassing).toBe(true);
       expect(checks.checks.length).toBe(2);
+    });
+
+    it('should fail closed (success: false, allPassing: false) when JSON parsing fails', async () => {
+      const mockExecutor: CommandExecutor = async () => ({
+        exitCode: 0,
+        stdout: 'not-valid-json-output',
+        stderr: '',
+      });
+
+      const adapter = new GitHubPRAdapter(mockExecutor);
+      const checks = await adapter.getPRChecks('/fake/worktree', 'anti/task-100');
+
+      expect(checks.success).toBe(false);
+      expect(checks.allPassing).toBe(false);
+      expect(checks.error).toContain('Failed to parse PR checks JSON');
+    });
+
+    it('should fail closed when output is empty', async () => {
+      const mockExecutor: CommandExecutor = async () => ({
+        exitCode: 0,
+        stdout: '   \n   ',
+        stderr: '',
+      });
+
+      const adapter = new GitHubPRAdapter(mockExecutor);
+      const checks = await adapter.getPRChecks('/fake/worktree', 'anti/task-100');
+
+      expect(checks.success).toBe(false);
+      expect(checks.allPassing).toBe(false);
+      expect(checks.error).toContain('No check output returned');
+    });
+
+    it('should detect failing checks correctly', async () => {
+      const mockExecutor: CommandExecutor = async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify([
+          { name: 'build', status: 'completed', conclusion: 'success' },
+          { name: 'test', status: 'completed', conclusion: 'failure' },
+        ]),
+        stderr: '',
+      });
+
+      const adapter = new GitHubPRAdapter(mockExecutor);
+      const checks = await adapter.getPRChecks('/fake/worktree', 'anti/task-100');
+
+      expect(checks.success).toBe(true);
+      expect(checks.allPassing).toBe(false);
     });
   });
 });

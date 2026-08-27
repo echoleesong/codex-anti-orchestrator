@@ -106,8 +106,9 @@ describe('Antigravity CLI (agy) Adapter', () => {
 
     const call = capturedCalls[0];
     expect(call.file).toBe('agy');
-    expect(call.args).toContain('--sandbox');
-    expect(call.args).toContain('-p');
+    expect(call.args[0]).toBe('--sandbox');
+    expect(call.args[1]).toBe('--edit');
+    expect(call.args[2]).toBe('-p');
     expect(call.options?.cwd).toBe(worktreePath);
     expect(call.args).not.toContain('--dangerously-skip-permissions');
   });

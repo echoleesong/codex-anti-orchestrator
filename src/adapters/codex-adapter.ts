@@ -147,6 +147,54 @@ export function parseCodexReviewOutput(rawOutput: string): CodexReviewResult {
   };
 }
 
+/**
+ * Constructs the structured review prompt for Codex execution in read-only sandbox mode.
+ */
+export function buildCodexReviewPrompt(
+  options: {
+    baseBranch?: string;
+    targetBranch?: string;
+    diff?: string;
+  } = {}
+): string {
+  const lines: string[] = [
+    'You are performing an automated, strictly read-only code review of changes in this repository worktree.',
+  ];
+
+  if (options.baseBranch) {
+    lines.push(`Base target branch: "${options.baseBranch}".`);
+  }
+  if (options.targetBranch) {
+    lines.push(`Task branch to review: "${options.targetBranch}".`);
+  }
+  if (options.diff) {
+    lines.push('Code Diff to review:');
+    lines.push('```diff');
+    lines.push(options.diff.trim());
+    lines.push('```');
+  }
+
+  lines.push(
+    '',
+    'Review all changed files, tests, and documentation for correctness, security, style, and regressions.',
+    'You MUST respond with a JSON object strictly matching this schema:',
+    '```json',
+    '{',
+    '  "verdict": "APPROVE" | "CHANGES_REQUIRED" | "NEEDS_USER_DECISION",',
+    '  "summary": "<Concise summary of review findings>",',
+    '  "blockingIssues": ["<list of any blocking security, functional, or stability issues>"],',
+    '  "warnings": ["<list of non-blocking suggestions, stylistic notes, or warnings>"]',
+    '}',
+    '```',
+    'Verdict Criteria:',
+    '- APPROVE: Code is clean, well-tested, adheres to architecture, and has zero blocking issues.',
+    '- CHANGES_REQUIRED: Code contains bugs, test failures, security flaws, or defects that can be automatically fixed.',
+    '- NEEDS_USER_DECISION: Ambiguity, architectural tradeoffs, or conflicting requirements require human decision.'
+  );
+
+  return lines.join('\n');
+}
+
 export class CodexAdapter {
   private executor: CommandExecutor;
 
@@ -155,19 +203,20 @@ export class CodexAdapter {
   }
 
   /**
-   * Invokes Codex in strictly read-only sandbox mode to review code diffs / PRs.
-   * Enforces argument arrays, read-only permissions, and fail-safe parsing.
+   * Invokes Codex using 'codex exec --sandbox read-only' to perform a read-only code review.
+   * Enforces argument arrays, read-only sandbox permissions, and fail-closed parsing.
    */
   async review(options: CodexReviewOptions): Promise<CodexReviewResult> {
     const executor = options.executor || this.executor;
     const timeoutMs = options.timeoutMs ?? 120000; // 2 minutes default
 
-    // Strict command invariant: read-only sandbox inspection only
-    const args = ['review', '--read-only', '--format', 'json'];
+    const prompt = buildCodexReviewPrompt({
+      targetBranch: options.prNumberOrBranch,
+      diff: options.diff,
+    });
 
-    if (options.prNumberOrBranch) {
-      args.push('--target', options.prNumberOrBranch);
-    }
+    // Strict command invariant: uses 'codex exec --sandbox read-only <prompt>'
+    const args = ['exec', '--sandbox', 'read-only', prompt];
 
     const execResult = await executor('codex', args, {
       cwd: options.worktreePath,

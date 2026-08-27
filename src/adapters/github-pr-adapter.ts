@@ -267,13 +267,32 @@ export class GitHubPRAdapter {
       };
     }
 
+    const rawOutput = res.stdout.trim();
+    if (!rawOutput) {
+      return {
+        success: false,
+        allPassing: false,
+        checks: [],
+        error: 'No check output returned by gh pr checks (failing closed).',
+      };
+    }
+
     try {
-      const parsed = JSON.parse(res.stdout.trim()) as Array<{
+      const parsed = JSON.parse(rawOutput) as Array<{
         name: string;
         state?: string;
         status?: string;
         conclusion?: string;
       }>;
+
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        return {
+          success: false,
+          allPassing: false,
+          checks: [],
+          error: 'No CI checks found or invalid check data format (failing closed).',
+        };
+      }
 
       const checks = parsed.map((c) => ({
         name: c.name,
@@ -294,11 +313,12 @@ export class GitHubPRAdapter {
         allPassing,
         checks,
       };
-    } catch {
+    } catch (err) {
       return {
-        success: true,
-        allPassing: true, // If parsing fails or output is empty text
+        success: false,
+        allPassing: false,
         checks: [],
+        error: `Failed to parse PR checks JSON: ${err instanceof Error ? err.message : String(err)} (failing closed).`,
       };
     }
   }

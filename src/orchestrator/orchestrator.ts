@@ -14,6 +14,7 @@ import {
   getDefaultStateDir,
   getTaskBranchName,
   getTaskWorktreePath,
+  isProhibitedStagingPath,
   validateStateDirIsolation,
   validateTargetRepoPath,
 } from '../security/path-validator.js';
@@ -190,20 +191,75 @@ export class Orchestrator {
   }
 
   /**
-   * Helper to commit current changes in the isolated worktree.
+   * Helper to commit current changes in the isolated worktree using a fail-closed staging policy.
+   * Rejects prohibited, sensitive, and generated files before staging (never uses 'git add -A').
    */
-  private async commitWorktreeChanges(
+  async commitWorktreeChanges(
     worktreePath: string,
     commitMessage: string,
-    executor: CommandExecutor
+    executor: CommandExecutor = this.defaultExecutor
   ): Promise<boolean> {
-    await executor('git', ['add', '-A'], { cwd: worktreePath });
+    const statusRes = await executor('git', ['status', '--porcelain'], {
+      cwd: worktreePath,
+    });
+
+    if (statusRes.exitCode !== 0) {
+      throw new Error(`Failed to check worktree status before staging: ${statusRes.stderr.trim()}`);
+    }
+
+    const lines = statusRes.stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) {
+      return false; // No changes to commit
+    }
+
+    const filesToStage: string[] = [];
+    const prohibitedDetected: Array<{ file: string; reason: string }> = [];
+
+    for (const line of lines) {
+      // Line format: XY <path> or XY <old> -> <new>
+      const rawPath = line.slice(3).trim();
+      const actualFile = rawPath.includes(' -> ') ? rawPath.split(' -> ')[1].trim() : rawPath;
+
+      const check = isProhibitedStagingPath(actualFile);
+      if (check.prohibited) {
+        prohibitedDetected.push({
+          file: actualFile,
+          reason: check.reason || 'Prohibited staging path',
+        });
+      } else {
+        filesToStage.push(actualFile);
+      }
+    }
+
+    if (prohibitedDetected.length > 0) {
+      const details = prohibitedDetected.map((p) => `  - ${p.file} (${p.reason})`).join('\n');
+      throw new Error(
+        `Safe staging policy violation: Found prohibited or sensitive files in worktree before commit:\n${details}\nAutomated staging halted.`
+      );
+    }
+
+    if (filesToStage.length === 0) {
+      return false;
+    }
+
+    // Stage only explicitly validated safe files
+    const addRes = await executor('git', ['add', '--', ...filesToStage], { cwd: worktreePath });
+    if (addRes.exitCode !== 0 || addRes.error) {
+      throw new Error(
+        `Failed to stage validated safe files: ${addRes.stderr.trim() || addRes.error?.message || 'git add failed'}`
+      );
+    }
+
     const diffRes = await executor('git', ['diff', '--cached', '--name-only'], {
       cwd: worktreePath,
     });
 
     if (!diffRes.stdout.trim()) {
-      return false; // No changes to commit
+      return false; // No changes staged
     }
 
     const commitRes = await executor('git', ['commit', '-m', commitMessage], {
