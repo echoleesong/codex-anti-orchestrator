@@ -152,20 +152,16 @@ npm run build
 
 #### 2. Exact Configuration Pattern
 
-Add `codex-anti-orchestrator` to your Codex Desktop MCP configuration (e.g. `~/.codex/config.json` or application MCP settings) using the absolute path to `bin/mcp.js`:
+Add `codex-anti-orchestrator` to your Codex Desktop MCP configuration in `~/.codex/config.toml`:
 
-```json
-{
-  "mcpServers": {
-    "codex-anti-orchestrator": {
-      "command": "node",
-      "args": ["/Users/lisong/code/tools/codex-anti-orchestrator/bin/mcp.js"]
-    }
-  }
-}
+```toml
+[mcp_servers.codex-anti-orchestrator]
+command = "node"
+args = ["/absolute/path/to/codex-anti-orchestrator/bin/mcp.js"]
+cwd = "/absolute/path/to/codex-anti-orchestrator"
 ```
 
-_(Note: Replace `/Users/lisong/code/tools/codex-anti-orchestrator` with the absolute path to your local repository directory)._
+Replace `/absolute/path/to/codex-anti-orchestrator` with the absolute path to your own local repository directory. Codex must be restarted after saving configuration.
 
 #### 3. Available MCP Tools
 
