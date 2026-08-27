@@ -210,6 +210,31 @@ async function main() {
       break;
     }
 
+    case 'run': {
+      const taskId = nonFlagArgs[1] || parseArgValue(rawArgs, '--id');
+      if (!taskId) {
+        process.stderr.write('Error: Task ID required. Usage: orchestrator run <taskId>\n');
+        process.exit(1);
+      }
+
+      try {
+        const task = await orchestrator.runTaskLoop(taskId);
+        if (isJson) {
+          process.stdout.write(`${JSON.stringify(task, null, 2)}\n`);
+        } else {
+          process.stdout.write(`✓ Task loop finished (current state: ${task.state})\n\n`);
+          process.stdout.write(`${formatTaskSummary(task)}\n`);
+        }
+        process.exit(0);
+      } catch (err) {
+        process.stderr.write(
+          `Failed to run task loop: ${err instanceof Error ? err.message : String(err)}\n`
+        );
+        process.exit(1);
+      }
+      break;
+    }
+
     case 'version': {
       process.stdout.write('codex-anti-orchestrator v0.1.0\n');
       process.exit(0);
@@ -227,6 +252,7 @@ USAGE:
 COMMANDS:
   doctor                               Run read-only prerequisite and environment diagnostics
   create --repo <path> --prompt <p>    Initialize task, validate cleanliness, create external worktree
+  run <taskId>                         Execute the development, PR, and review state loop
   status [<taskId>] [--all]            Inspect status of a specific task or list all tasks
   cancel <taskId> [--reason <r>]       Cancel active task while preserving worktree
   resume <taskId> [--override]         Resume task from decision or failure state

@@ -152,6 +152,41 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
     expect(resumedGuidance.prompt).toContain('Fix null pointer in auth.ts');
   });
 
+  describe('commitWorktreeChanges Fail-Closed Staging Policy', () => {
+    it('should stage only validated safe files and commit successfully', async () => {
+      const task = await orchestrator.createTask({
+        repoPath: testRepoPath,
+        prompt: 'Safe staging test',
+      });
+
+      fs.writeFileSync(path.join(task.worktreePath, 'feature.ts'), 'export const x = 1;\n');
+      const committed = await orchestrator.commitWorktreeChanges(
+        task.worktreePath,
+        'feat: add feature.ts'
+      );
+      expect(committed).toBe(true);
+
+      const log = execFileSync('git', ['log', '-1', '--oneline'], {
+        cwd: task.worktreePath,
+      }).toString();
+      expect(log).toContain('feat: add feature.ts');
+    });
+
+    it('should fail closed and reject commit if prohibited sensitive files exist in worktree', async () => {
+      const task = await orchestrator.createTask({
+        repoPath: testRepoPath,
+        prompt: 'Sensitive file test',
+      });
+
+      fs.writeFileSync(path.join(task.worktreePath, 'feature.ts'), 'export const x = 1;\n');
+      fs.writeFileSync(path.join(task.worktreePath, '.env.production'), 'SECRET_KEY=123456\n');
+
+      await expect(
+        orchestrator.commitWorktreeChanges(task.worktreePath, 'feat: unsafe commit')
+      ).rejects.toThrow(/Safe staging policy violation/);
+    });
+  });
+
   describe('CLI Command Invariants', () => {
     it('should strictly reject create command for repositories outside /Users/lisong/code in production mode', async () => {
       const env = {

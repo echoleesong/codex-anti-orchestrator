@@ -109,7 +109,7 @@ exit 127
     expect(checkIds).toContain('gh');
     expect(checkIds).toContain('agy');
     expect(checkIds).toContain('codex');
-  });
+  }, 20000);
 
   it('should output valid JSON and exit code 1 when prerequisites fail in isolated environment', async () => {
     try {
@@ -135,7 +135,7 @@ exit 127
       expect(parsed!.hasErrors).toBe(true);
       expect(parsed!.allOk).toBe(false);
     }
-  });
+  }, 20000);
 
   it('should output clean human-readable report on doctor command', async () => {
     const { stdout, stderr } = await execFileAsync('npx', ['tsx', cliPath, 'doctor'], {

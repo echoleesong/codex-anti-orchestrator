@@ -6,6 +6,7 @@ import {
   generateSafeTaskId,
   getTaskBranchName,
   getTaskWorktreePath,
+  isProhibitedStagingPath,
   validateStateDirIsolation,
   validateTargetRepoPath,
 } from '../src/security/path-validator.js';
@@ -117,6 +118,34 @@ describe('Path and Security Validation', () => {
       const res = validateStateDirIsolation(stateDir, insideRepo);
       expect(res.valid).toBe(false);
       expect(res.error).toContain('cannot be located inside state directory');
+    });
+  });
+
+  describe('isProhibitedStagingPath', () => {
+    it('should reject prohibited paths: node_modules, secrets, env, and orchestrator state', () => {
+      expect(isProhibitedStagingPath('node_modules').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('node_modules/pkg/index.js').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('.env').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('.env.production').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('credentials.json').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('id_rsa').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('id_ed25519').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('server.key').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('cert.pem').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('state.json').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('.codex-anti-orchestrator/state.json').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('.git/index').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('dist/bundle.js').prohibited).toBe(true);
+      expect(isProhibitedStagingPath('coverage/lcov.info').prohibited).toBe(true);
+    });
+
+    it('should allow legitimate project source and config files', () => {
+      expect(isProhibitedStagingPath('src/index.ts').prohibited).toBe(false);
+      expect(isProhibitedStagingPath('tests/app.test.ts').prohibited).toBe(false);
+      expect(isProhibitedStagingPath('README.md').prohibited).toBe(false);
+      expect(isProhibitedStagingPath('package.json').prohibited).toBe(false);
+      expect(isProhibitedStagingPath('.gitignore').prohibited).toBe(false);
+      expect(isProhibitedStagingPath('.env.example').prohibited).toBe(false);
     });
   });
 });

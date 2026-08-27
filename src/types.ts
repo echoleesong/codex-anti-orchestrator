@@ -22,13 +22,24 @@ export interface ExecOutput {
   exitCode: number;
   stdout: string;
   stderr: string;
+  signal?: NodeJS.Signals | string | null;
+  timedOut?: boolean;
   error?: Error;
+}
+
+export interface SafeExecOptions {
+  cwd?: string;
+  timeoutMs?: number;
+  maxBuffer?: number;
+  env?: Record<string, string>;
+  rejectForbiddenFlags?: boolean;
+  forbiddenFlags?: string[];
 }
 
 export type CommandExecutor = (
   file: string,
   args: string[],
-  options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> }
+  options?: SafeExecOptions
 ) => Promise<ExecOutput>;
 
 export interface DoctorOptions {
@@ -78,6 +89,8 @@ export interface TaskDiagnostics {
   resumeTargetState?: TaskState;
   resumeInstructions?: string;
   worktreePreserved: boolean;
+  lastReviewVerdict?: CodexVerdict;
+  lastTestPassed?: boolean;
 }
 
 export interface TaskRecord {
@@ -102,6 +115,7 @@ export interface CreateTaskOptions {
   stateDir?: string;
   executor?: CommandExecutor;
   allowedBaseDir?: string;
+  maxReviewCycles?: number;
 }
 
 export interface ResumeTaskOptions {
@@ -109,4 +123,112 @@ export interface ResumeTaskOptions {
   guidance?: string;
   stateDir?: string;
   executor?: CommandExecutor;
+}
+
+// ----------------------------------------------------------------------
+// Phase 3: Adapters & State Loop Types
+// ----------------------------------------------------------------------
+
+export type CodexVerdict = 'APPROVE' | 'CHANGES_REQUIRED' | 'NEEDS_USER_DECISION';
+
+export interface CodexReviewResult {
+  verdict: CodexVerdict;
+  summary: string;
+  blockingIssues: string[];
+  warnings: string[];
+  parsedCleanly: boolean;
+  rawOutput?: string;
+}
+
+export interface CodexReviewOptions {
+  worktreePath: string;
+  baseBranch?: string;
+  diff?: string;
+  prNumberOrBranch?: string;
+  executor?: CommandExecutor;
+  timeoutMs?: number;
+}
+
+export interface AgyExecutionResult {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  error?: string;
+}
+
+export interface AgyRunOptions {
+  worktreePath: string;
+  prompt: string;
+  stateDir?: string;
+  targetRepoPath?: string;
+  executor?: CommandExecutor;
+  timeoutMs?: number;
+}
+
+export interface AgyFixFeedback {
+  blockingIssues: string[];
+  warnings?: string[];
+  testErrors?: string;
+}
+
+export interface PROperationResult {
+  success: boolean;
+  prUrl?: string;
+  prNumber?: number;
+  title?: string;
+  body?: string;
+  state?: string;
+  error?: string;
+}
+
+export interface CreatePROptions {
+  worktreePath: string;
+  targetRepoPath?: string;
+  branch: string;
+  baseBranch: string;
+  title: string;
+  body: string;
+  executor?: CommandExecutor;
+}
+
+export interface ViewPROptions {
+  worktreePath: string;
+  targetRepoPath?: string;
+  prNumberOrBranch: string;
+  executor?: CommandExecutor;
+}
+
+export interface UpdatePROptions {
+  worktreePath: string;
+  targetRepoPath?: string;
+  prNumberOrBranch?: string;
+  title?: string;
+  body?: string;
+  comment?: string;
+  executor?: CommandExecutor;
+}
+
+export interface PRCheckItem {
+  name: string;
+  state: string;
+  bucket: string;
+  description?: string;
+  link?: string;
+  workflow?: string;
+  status?: string;
+  conclusion?: string;
+}
+
+export interface PRChecksResult {
+  success: boolean;
+  allPassing: boolean;
+  checks: PRCheckItem[];
+  error?: string;
+}
+
+export interface RunTaskLoopOptions {
+  taskId: string;
+  stateDir?: string;
+  executor?: CommandExecutor;
+  autoApprove?: boolean;
 }

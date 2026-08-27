@@ -4,4 +4,7 @@ export * from './utils/exec.js';
 export * from './security/path-validator.js';
 export * from './git/git-utils.js';
 export * from './state/state-machine.js';
+export * from './adapters/agy-adapter.js';
+export * from './adapters/codex-adapter.js';
+export * from './adapters/github-pr-adapter.js';
 export * from './orchestrator/orchestrator.js';

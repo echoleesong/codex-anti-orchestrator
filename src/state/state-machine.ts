@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getTaskDir, getTaskStateFilePath } from '../security/path-validator.js';
-import type { StateTransitionRecord, TaskRecord, TaskState } from '../types.js';
+import type { PRChecksResult, StateTransitionRecord, TaskRecord, TaskState } from '../types.js';
 
 export const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
   IDLE: ['INITIALIZING', 'ABORTED'],
@@ -44,6 +44,15 @@ export function isValidTransition(from: TaskState, to: TaskState): boolean {
   return Boolean(allowed && allowed.includes(to));
 }
 
+export interface StateTransitionOptions {
+  reason?: string;
+  error?: string;
+  reviewClean?: boolean;
+  testsPass?: boolean;
+  ciPassing?: boolean;
+  ciProof?: { allPassing?: boolean; [key: string]: unknown } | PRChecksResult | unknown;
+}
+
 /**
  * Validates and records a state transition on a TaskRecord.
  * Throws an Error if the transition is illegal.
@@ -51,12 +60,7 @@ export function isValidTransition(from: TaskState, to: TaskState): boolean {
 export function transitionTaskState(
   task: TaskRecord,
   nextState: TaskState,
-  options: {
-    reason?: string;
-    error?: string;
-    reviewClean?: boolean;
-    testsPass?: boolean;
-  } = {}
+  options: StateTransitionOptions = {}
 ): TaskRecord {
   const currentState = task.state;
 
@@ -79,10 +83,22 @@ export function transitionTaskState(
         `Illegal state transition: AWAITING_HUMAN_APPROVAL can only be entered from REVIEW_EVALUATING (current: ${currentState}).`
       );
     }
-    // Both fields must be explicitly and strictly true. Missing (undefined/null) or false are strictly rejected.
-    if (options.reviewClean !== true || options.testsPass !== true) {
+    // reviewClean, testsPass, ciPassing === true, AND a structured ciProof object demonstrating allPassing === true
+    // must all be explicitly and strictly true. A caller cannot pass ciPassing alone.
+    const isCiProofValid =
+      typeof options.ciProof === 'object' &&
+      options.ciProof !== null &&
+      !Array.isArray(options.ciProof) &&
+      (options.ciProof as { allPassing?: unknown }).allPassing === true;
+
+    if (
+      options.reviewClean !== true ||
+      options.testsPass !== true ||
+      options.ciPassing !== true ||
+      !isCiProofValid
+    ) {
       throw new Error(
-        'Cannot transition to AWAITING_HUMAN_APPROVAL: both reviewClean and testsPass must be strictly true (missing or false fields rejected).'
+        'Cannot transition to AWAITING_HUMAN_APPROVAL: reviewClean, testsPass, ciPassing === true, and a structured ciProof object demonstrating allPassing === true must all be strictly provided and true (missing, false, or malformed fields rejected).'
       );
     }
   }
