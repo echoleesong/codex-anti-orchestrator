@@ -53,17 +53,60 @@ describe('OpenAI Codex CLI (codex) Adapter & Review Parser', () => {
       expect(res.summary).toContain('Architectural tradeoff');
     });
 
-    it('should downgrade APPROVE to CHANGES_REQUIRED if blocking issues are present', () => {
+    it('should fail closed to NEEDS_USER_DECISION when APPROVE has missing blockingIssues', () => {
       const output = JSON.stringify({
         verdict: 'APPROVE',
-        summary: 'Looks good but please fix security issue.',
+        summary: 'Looks good but omitted blockingIssues field.',
+      });
+
+      const res = parseCodexReviewOutput(output);
+      expect(res.verdict).toBe('NEEDS_USER_DECISION');
+      expect(res.parsedCleanly).toBe(false);
+      expect(res.summary).toContain(
+        'blockingIssues must be an explicitly present empty array of strings'
+      );
+    });
+
+    it('should fail closed to NEEDS_USER_DECISION when APPROVE has non-array blockingIssues', () => {
+      const nonArrayOutputs = [
+        JSON.stringify({ verdict: 'APPROVE', blockingIssues: null }),
+        JSON.stringify({ verdict: 'APPROVE', blockingIssues: 'none' }),
+        JSON.stringify({ verdict: 'APPROVE', blockingIssues: 0 }),
+        JSON.stringify({ verdict: 'APPROVE', blockingIssues: {} }),
+      ];
+
+      for (const output of nonArrayOutputs) {
+        const res = parseCodexReviewOutput(output);
+        expect(res.verdict).toBe('NEEDS_USER_DECISION');
+        expect(res.parsedCleanly).toBe(false);
+      }
+    });
+
+    it('should fail closed to NEEDS_USER_DECISION when APPROVE has non-empty blockingIssues', () => {
+      const output = JSON.stringify({
+        verdict: 'APPROVE',
+        summary: 'Contradictory verdict with blockers.',
         blockingIssues: ['Hardcoded password found in config'],
         warnings: [],
       });
 
       const res = parseCodexReviewOutput(output);
-      expect(res.verdict).toBe('CHANGES_REQUIRED');
-      expect(res.blockingIssues.length).toBe(1);
+      expect(res.verdict).toBe('NEEDS_USER_DECISION');
+      expect(res.parsedCleanly).toBe(false);
+      expect(res.summary).toContain(
+        'blockingIssues must be an explicitly present empty array of strings'
+      );
+    });
+
+    it('should fail closed to NEEDS_USER_DECISION when APPROVE has non-string elements in blockingIssues', () => {
+      const output = JSON.stringify({
+        verdict: 'APPROVE',
+        blockingIssues: [123],
+      });
+
+      const res = parseCodexReviewOutput(output);
+      expect(res.verdict).toBe('NEEDS_USER_DECISION');
+      expect(res.parsedCleanly).toBe(false);
     });
 
     it('should extract JSON embedded in markdown code fences', () => {

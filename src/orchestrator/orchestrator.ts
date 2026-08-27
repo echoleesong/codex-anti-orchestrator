@@ -36,7 +36,6 @@ import { defaultExecutor } from '../utils/exec.js';
 export interface RunLoopOptions {
   executor?: CommandExecutor;
   maxReviewCycles?: number;
-  skipTests?: boolean;
   testRunner?: (
     worktreePath: string,
     executor: CommandExecutor
@@ -413,19 +412,14 @@ export class Orchestrator {
             });
             await saveTaskState(this.stateDir, task);
 
-            // 1. Run automated tests in worktree
-            let testPassed = true;
-            let testErrors: string | undefined;
-
-            if (!loopOptions.skipTests) {
-              const testResult = await this.runWorktreeTests(
-                task.worktreePath,
-                executor,
-                loopOptions.testRunner
-              );
-              testPassed = testResult.pass;
-              testErrors = testResult.errors;
-            }
+            // 1. Run automated tests in worktree (mandatory local tests)
+            const testResult = await this.runWorktreeTests(
+              task.worktreePath,
+              executor,
+              loopOptions.testRunner
+            );
+            const testPassed = testResult.pass;
+            const testErrors = testResult.errors;
 
             task.diagnostics.lastTestPassed = testPassed;
 
@@ -468,6 +462,8 @@ export class Orchestrator {
                   'All automated tests passed, GitHub PR CI checks passed, and Codex review reported zero blocking issues.',
                 reviewClean: true,
                 testsPass: true,
+                ciPassing: true,
+                ciProof: prChecks,
               });
               await saveTaskState(this.stateDir, task);
               return task;

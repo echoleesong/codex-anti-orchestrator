@@ -208,10 +208,21 @@ export interface UpdatePROptions {
   executor?: CommandExecutor;
 }
 
+export interface PRCheckItem {
+  name: string;
+  state: string;
+  bucket: string;
+  description?: string;
+  link?: string;
+  workflow?: string;
+  status?: string;
+  conclusion?: string;
+}
+
 export interface PRChecksResult {
   success: boolean;
   allPassing: boolean;
-  checks: Array<{ name: string; status: string; conclusion?: string }>;
+  checks: PRCheckItem[];
   error?: string;
 }
 

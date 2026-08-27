@@ -109,8 +109,8 @@ describe('Controlled State-Loop Execution & Transitions', () => {
             return {
               exitCode: 0,
               stdout: JSON.stringify([
-                { name: 'ci/build', status: 'completed', conclusion: 'success' },
-                { name: 'ci/test', status: 'completed', conclusion: 'success' },
+                { name: 'ci/build', state: 'SUCCESS', bucket: 'pass' },
+                { name: 'ci/test', state: 'SUCCESS', bucket: 'pass' },
               ]),
               stderr: '',
             };
@@ -118,25 +118,23 @@ describe('Controlled State-Loop Execution & Transitions', () => {
           if (prStatus === 'pending') {
             return {
               exitCode: 0,
-              stdout: JSON.stringify([{ name: 'ci/build', status: 'in_progress', conclusion: '' }]),
+              stdout: JSON.stringify([
+                { name: 'ci/build', state: 'IN_PROGRESS', bucket: 'pending' },
+              ]),
               stderr: '',
             };
           }
           if (prStatus === 'failing') {
             return {
               exitCode: 0,
-              stdout: JSON.stringify([
-                { name: 'ci/build', status: 'completed', conclusion: 'failure' },
-              ]),
+              stdout: JSON.stringify([{ name: 'ci/build', state: 'FAILURE', bucket: 'fail' }]),
               stderr: '',
             };
           }
           if (prStatus === 'cancelled') {
             return {
               exitCode: 0,
-              stdout: JSON.stringify([
-                { name: 'ci/build', status: 'completed', conclusion: 'cancelled' },
-              ]),
+              stdout: JSON.stringify([{ name: 'ci/build', state: 'CANCELLED', bucket: 'cancel' }]),
               stderr: '',
             };
           }
@@ -578,5 +576,59 @@ describe('Controlled State-Loop Execution & Transitions', () => {
     const overrideTask = await orchestrator.resumeTask(task.id, { override: true });
     expect(overrideTask.state).toBe('AWAITING_HUMAN_OVERRIDE');
     expect(overrideTask.diagnostics.worktreePreserved).toBe(true);
+  });
+
+  it('regression: should unconditionally execute local tests and trigger fix loop when local tests fail even if review is APPROVE', async () => {
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE', 'APPROVE'],
+      testsPass: [false, true],
+    });
+
+    const orchestrator = new Orchestrator({
+      stateDir,
+      allowedBaseDir: tempDir,
+      executor: mock,
+    });
+
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Feature with initial test failure',
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('AWAITING_HUMAN_APPROVAL');
+    expect(finishedTask.diagnostics.reviewCycles).toBe(1);
+    expect(finishedTask.diagnostics.lastTestPassed).toBe(true);
+
+    const states = finishedTask.transitions.map((t) => t.to);
+    expect(states).toContain('AGY_FIXING');
+    expect(states).toContain('PR_UPDATING');
+    expect(states[states.length - 1]).toBe('AWAITING_HUMAN_APPROVAL');
+  });
+
+  it('regression: should transition to NEEDS_USER_DECISION when local tests fail and max review cycles exhausted', async () => {
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE', 'APPROVE', 'APPROVE'],
+      testsPass: [false, false, false],
+    });
+
+    const orchestrator = new Orchestrator({
+      stateDir,
+      allowedBaseDir: tempDir,
+      executor: mock,
+    });
+
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Feature with persistent test failure',
+      maxReviewCycles: 2,
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
+    expect(finishedTask.diagnostics.lastTestPassed).toBe(false);
+    expect(finishedTask.diagnostics.reviewCycles).toBe(2);
   });
 });

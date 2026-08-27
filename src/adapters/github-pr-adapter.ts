@@ -254,7 +254,7 @@ export class GitHubPRAdapter {
     if (prNumberOrBranch) {
       args.push(prNumberOrBranch);
     }
-    args.push('--json', 'name,state,bucket,conclusion,status');
+    args.push('--json', 'bucket,completedAt,description,event,link,name,startedAt,state,workflow');
 
     const res = await executor('gh', args, { cwd: worktreePath });
 
@@ -263,7 +263,7 @@ export class GitHubPRAdapter {
         success: false,
         allPassing: false,
         checks: [],
-        error: `Failed to get PR checks: ${res.stderr.trim() || res.stdout.trim() || 'gh pr checks failed'}`,
+        error: `Failed to get PR checks: ${res.stderr.trim() || res.stdout.trim() || res.error?.message || 'gh pr checks failed'}`,
       };
     }
 
@@ -278,12 +278,7 @@ export class GitHubPRAdapter {
     }
 
     try {
-      const parsed = JSON.parse(rawOutput) as Array<{
-        name: string;
-        state?: string;
-        status?: string;
-        conclusion?: string;
-      }>;
+      const parsed: unknown = JSON.parse(rawOutput);
 
       if (!Array.isArray(parsed) || parsed.length === 0) {
         return {
@@ -294,18 +289,61 @@ export class GitHubPRAdapter {
         };
       }
 
-      const checks = parsed.map((c) => ({
-        name: c.name,
-        status: c.status || c.state || 'unknown',
-        conclusion: c.conclusion || undefined,
-      }));
+      for (const item of parsed) {
+        if (!item || typeof item !== 'object') {
+          return {
+            success: false,
+            allPassing: false,
+            checks: [],
+            error:
+              'Malformed check entry in PR checks: check item must be an object (failing closed).',
+          };
+        }
+        const c = item as Record<string, unknown>;
+        if (
+          typeof c.name !== 'string' ||
+          !c.name.trim() ||
+          typeof c.state !== 'string' ||
+          !c.state.trim() ||
+          typeof c.bucket !== 'string' ||
+          !c.bucket.trim()
+        ) {
+          return {
+            success: false,
+            allPassing: false,
+            checks: [],
+            error: `Malformed check entry in PR checks: missing or empty required name, state, or bucket fields: ${JSON.stringify(c)} (failing closed).`,
+          };
+        }
+      }
 
+      const checks = (parsed as Array<Record<string, unknown>>).map((c) => {
+        const name = (c.name as string).trim();
+        const state = (c.state as string).trim();
+        const bucket = (c.bucket as string).trim();
+        const description = typeof c.description === 'string' ? c.description.trim() : undefined;
+        const link = typeof c.link === 'string' ? c.link.trim() : undefined;
+        const workflow = typeof c.workflow === 'string' ? c.workflow.trim() : undefined;
+        const status = typeof c.status === 'string' ? c.status.trim() : state;
+        const conclusion = typeof c.conclusion === 'string' ? c.conclusion.trim() : bucket;
+
+        return {
+          name,
+          state,
+          bucket,
+          description,
+          link,
+          workflow,
+          status,
+          conclusion,
+        };
+      });
+
+      const passingStates = ['success', 'neutral', 'pass', 'completed'];
       const allPassing =
         checks.length > 0 &&
         checks.every(
-          (c) =>
-            c.status.toLowerCase() === 'completed' &&
-            (c.conclusion?.toLowerCase() === 'success' || c.conclusion?.toLowerCase() === 'neutral')
+          (c) => c.bucket.toLowerCase() === 'pass' && passingStates.includes(c.state.toLowerCase())
         );
 
       return {

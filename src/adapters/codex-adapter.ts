@@ -108,6 +108,33 @@ export function parseCodexReviewOutput(rawOutput: string): CodexReviewResult {
     };
   }
 
+  // Invariant: For APPROVE, require an explicitly present blockingIssues array containing only strings and zero entries
+  if (normalizedVerdict === 'APPROVE') {
+    const hasValidBlockingIssues =
+      'blockingIssues' in obj &&
+      Array.isArray(obj.blockingIssues) &&
+      obj.blockingIssues.length === 0 &&
+      obj.blockingIssues.every((item) => typeof item === 'string');
+
+    if (!hasValidBlockingIssues) {
+      const rawBlockers = obj.blockingIssues;
+      const extractedBlockers = Array.isArray(rawBlockers)
+        ? rawBlockers.map((b) => (typeof b === 'string' ? b : JSON.stringify(b))).filter(Boolean)
+        : [];
+      return {
+        verdict: 'NEEDS_USER_DECISION',
+        summary:
+          'Invalid APPROVE review payload: blockingIssues must be an explicitly present empty array of strings. Failing safe to NEEDS_USER_DECISION.',
+        blockingIssues: extractedBlockers,
+        warnings: Array.isArray(obj.warnings)
+          ? obj.warnings.map((w) => (typeof w === 'string' ? w : JSON.stringify(w))).filter(Boolean)
+          : [],
+        parsedCleanly: false,
+        rawOutput,
+      };
+    }
+  }
+
   // Extract blocking issues
   const rawBlockers = obj.blockingIssues || obj.blocking_issues || obj.issues || obj.blockers || [];
   const blockingIssues: string[] = Array.isArray(rawBlockers)
@@ -125,22 +152,10 @@ export function parseCodexReviewOutput(rawOutput: string): CodexReviewResult {
       ? obj.summary.trim()
       : `Review completed with verdict: ${normalizedVerdict}`;
 
-  // Invariant: APPROVE cannot have blocking issues
-  if (normalizedVerdict === 'APPROVE' && blockingIssues.length > 0) {
-    return {
-      verdict: 'CHANGES_REQUIRED',
-      summary: 'Downgraded verdict to CHANGES_REQUIRED because blocking issues were detected.',
-      blockingIssues,
-      warnings,
-      parsedCleanly: true,
-      rawOutput,
-    };
-  }
-
   return {
     verdict: normalizedVerdict,
     summary,
-    blockingIssues,
+    blockingIssues: normalizedVerdict === 'APPROVE' ? [] : blockingIssues,
     warnings,
     parsedCleanly: true,
     rawOutput,

@@ -69,6 +69,8 @@ describe('State Machine & Transitions', () => {
     task = transitionTaskState(task, 'AWAITING_HUMAN_APPROVAL', {
       reviewClean: true,
       testsPass: true,
+      ciPassing: true,
+      ciProof: { allPassing: true },
     });
     expect(task.state).toBe('AWAITING_HUMAN_APPROVAL');
 
@@ -108,7 +110,7 @@ describe('State Machine & Transitions', () => {
     expect(task.state).toBe('AGY_FIXING');
   });
 
-  it('should strictly reject AWAITING_HUMAN_APPROVAL when reviewClean or testsPass is missing or false', () => {
+  it('should strictly reject AWAITING_HUMAN_APPROVAL when reviewClean, testsPass, ciPassing, or structured ciProof is missing, false, or malformed', () => {
     const makeTask = () => {
       const t = createInitialTask();
       t.state = 'REVIEW_EVALUATING';
@@ -118,44 +120,155 @@ describe('State Machine & Transitions', () => {
     // Missing all options
     expect(() => {
       transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {});
-    }).toThrow(/both reviewClean and testsPass must be strictly true/);
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
 
     // Missing testsPass
     expect(() => {
       transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
         reviewClean: true,
+        ciPassing: true,
+        ciProof: { allPassing: true },
       });
-    }).toThrow(/both reviewClean and testsPass must be strictly true/);
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
 
     // Missing reviewClean
     expect(() => {
       transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
         testsPass: true,
+        ciPassing: true,
+        ciProof: { allPassing: true },
       });
-    }).toThrow(/both reviewClean and testsPass must be strictly true/);
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+
+    // Missing ciPassing alone (caller passes ciProof only)
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        reviewClean: true,
+        testsPass: true,
+        ciProof: { allPassing: true },
+      });
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+
+    // Missing ciProof alone (caller passes ciPassing only)
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        reviewClean: true,
+        testsPass: true,
+        ciPassing: true,
+      });
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
 
     // False reviewClean
     expect(() => {
       transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
         reviewClean: false,
         testsPass: true,
+        ciPassing: true,
+        ciProof: { allPassing: true },
       });
-    }).toThrow(/both reviewClean and testsPass must be strictly true/);
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
 
     // False testsPass
     expect(() => {
       transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
         reviewClean: true,
         testsPass: false,
+        ciPassing: true,
+        ciProof: { allPassing: true },
       });
-    }).toThrow(/both reviewClean and testsPass must be strictly true/);
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
 
-    // Strictly both true -> succeeds
-    const okTask = transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+    // False ciPassing
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        reviewClean: true,
+        testsPass: true,
+        ciPassing: false,
+        ciProof: { allPassing: true },
+      });
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+
+    // False ciProof object allPassing
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        reviewClean: true,
+        testsPass: true,
+        ciPassing: true,
+        ciProof: { allPassing: false },
+      });
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+
+    // Malformed ciProof: boolean instead of structured object
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        reviewClean: true,
+        testsPass: true,
+        ciPassing: true,
+        ciProof: true,
+      });
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+
+    // Malformed ciProof: null
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        reviewClean: true,
+        testsPass: true,
+        ciPassing: true,
+        ciProof: null,
+      });
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+
+    // Malformed ciProof: array
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        reviewClean: true,
+        testsPass: true,
+        ciPassing: true,
+        ciProof: [{ allPassing: true }],
+      });
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+
+    // Malformed ciProof: empty object (missing allPassing)
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        reviewClean: true,
+        testsPass: true,
+        ciPassing: true,
+        ciProof: {},
+      });
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+
+    // Malformed ciProof: non-boolean allPassing
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        reviewClean: true,
+        testsPass: true,
+        ciPassing: true,
+        ciProof: { allPassing: 'true' },
+      });
+    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+
+    // Valid proof with simple allPassing: true
+    const okTask1 = transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
       reviewClean: true,
       testsPass: true,
+      ciPassing: true,
+      ciProof: { allPassing: true },
     });
-    expect(okTask.state).toBe('AWAITING_HUMAN_APPROVAL');
+    expect(okTask1.state).toBe('AWAITING_HUMAN_APPROVAL');
+
+    // Valid proof with complete PRChecksResult object
+    const okTask2 = transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+      reviewClean: true,
+      testsPass: true,
+      ciPassing: true,
+      ciProof: {
+        success: true,
+        allPassing: true,
+        checks: [{ name: 'ci/test', state: 'SUCCESS', bucket: 'pass' }],
+      },
+    });
+    expect(okTask2.state).toBe('AWAITING_HUMAN_APPROVAL');
   });
 
   it('should reject invalid random state transitions', () => {

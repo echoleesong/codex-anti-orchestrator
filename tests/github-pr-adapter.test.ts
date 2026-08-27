@@ -170,8 +170,8 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
       const mockExecutor: CommandExecutor = async () => ({
         exitCode: 0,
         stdout: JSON.stringify([
-          { name: 'build', status: 'completed', conclusion: 'success' },
-          { name: 'test', status: 'completed', conclusion: 'success' },
+          { name: 'build', state: 'SUCCESS', bucket: 'pass' },
+          { name: 'test', state: 'SUCCESS', bucket: 'pass' },
         ]),
         stderr: '',
       });
@@ -182,6 +182,9 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
       expect(checks.success).toBe(true);
       expect(checks.allPassing).toBe(true);
       expect(checks.checks.length).toBe(2);
+      expect(checks.checks[0].name).toBe('build');
+      expect(checks.checks[0].state).toBe('SUCCESS');
+      expect(checks.checks[0].bucket).toBe('pass');
     });
 
     it('should fail closed (success: false, allPassing: false) when JSON parsing fails', async () => {
@@ -218,8 +221,8 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
       const mockExecutor: CommandExecutor = async () => ({
         exitCode: 0,
         stdout: JSON.stringify([
-          { name: 'build', status: 'completed', conclusion: 'success' },
-          { name: 'test', status: 'completed', conclusion: 'failure' },
+          { name: 'build', state: 'SUCCESS', bucket: 'pass' },
+          { name: 'test', state: 'FAILURE', bucket: 'fail' },
         ]),
         stderr: '',
       });
@@ -235,8 +238,8 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
       const mockExecutor: CommandExecutor = async () => ({
         exitCode: 0,
         stdout: JSON.stringify([
-          { name: 'build', status: 'completed', conclusion: 'success' },
-          { name: 'test', status: 'in_progress', conclusion: '' },
+          { name: 'build', state: 'SUCCESS', bucket: 'pass' },
+          { name: 'test', state: 'IN_PROGRESS', bucket: 'pending' },
         ]),
         stderr: '',
       });
@@ -252,7 +255,7 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
     it('should handle cancelled PR checks correctly (allPassing: false)', async () => {
       const mockExecutor: CommandExecutor = async () => ({
         exitCode: 0,
-        stdout: JSON.stringify([{ name: 'build', status: 'completed', conclusion: 'cancelled' }]),
+        stdout: JSON.stringify([{ name: 'build', state: 'CANCELLED', bucket: 'cancel' }]),
         stderr: '',
       });
 
@@ -293,6 +296,34 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
       expect(checks.success).toBe(false);
       expect(checks.allPassing).toBe(false);
       expect(checks.error).toContain('No CI checks found');
+    });
+
+    it('should fail closed when check entries are structurally incomplete (missing name, state, or bucket)', async () => {
+      const malformedPayloads = [
+        JSON.stringify([{ state: 'SUCCESS', bucket: 'pass' }]), // missing name
+        JSON.stringify([{ name: 'build', bucket: 'pass' }]), // missing state
+        JSON.stringify([{ name: 'build', state: 'SUCCESS' }]), // missing bucket
+        JSON.stringify([{ name: '', state: 'SUCCESS', bucket: 'pass' }]), // empty name
+        JSON.stringify([{ name: 'build', state: '   ', bucket: 'pass' }]), // empty state
+        JSON.stringify([{ name: 'build', state: 'SUCCESS', bucket: '' }]), // empty bucket
+        JSON.stringify([null]), // null entry
+        JSON.stringify(['non-object-entry']), // string entry
+      ];
+
+      for (const payload of malformedPayloads) {
+        const mockExecutor: CommandExecutor = async () => ({
+          exitCode: 0,
+          stdout: payload,
+          stderr: '',
+        });
+
+        const adapter = new GitHubPRAdapter(mockExecutor);
+        const checks = await adapter.getPRChecks('/fake/worktree', 'anti/task-100');
+
+        expect(checks.success).toBe(false);
+        expect(checks.allPassing).toBe(false);
+        expect(checks.error).toMatch(/Malformed check entry in PR checks/);
+      }
     });
   });
 });
