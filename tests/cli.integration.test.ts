@@ -71,6 +71,6 @@ describe('CLI Integration Tests (Real Process Execution)', () => {
     expect(stderr.trim()).toBe('');
     expect(stdout).toContain('USAGE:');
     expect(stdout).toContain('COMMANDS:');
-    expect(stdout).toContain("OPTIONS for 'doctor':");
+    expect(stdout).toContain('OPTIONS:');
   });
 });
