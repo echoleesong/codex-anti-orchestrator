@@ -101,10 +101,10 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
           },
         ],
       })),
-      resumeTask: vi.fn(async (taskId: string, options?: ResumeTaskOptions) => ({
+      resumeTask: vi.fn(async (taskId: string, _options?: ResumeTaskOptions) => ({
         ...sampleTaskRecord,
         id: taskId,
-        state: options?.override ? ('AWAITING_HUMAN_OVERRIDE' as const) : ('AGY_FIXING' as const),
+        state: 'AGY_FIXING' as const,
       })),
       getStateDir: vi.fn(() => '/Users/lisong/.codex-anti-orchestrator/worktrees'),
       getAllowedBaseDir: vi.fn(() => '/Users/lisong/code'),
@@ -187,10 +187,22 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
         expect(tool.inputSchema.type).toBe('object');
       }
     });
+
+    it('should strictly omit override from orchestrator_resume_task schema', async () => {
+      const toolsResponse = await client.listTools();
+      const resumeTool = toolsResponse.tools.find((t) => t.name === 'orchestrator_resume_task');
+      expect(resumeTool).toBeDefined();
+      const properties = (resumeTool?.inputSchema as { properties?: Record<string, unknown> })
+        .properties;
+      expect(properties).toBeDefined();
+      expect(properties).toHaveProperty('taskId');
+      expect(properties).toHaveProperty('guidance');
+      expect(properties).not.toHaveProperty('override');
+    });
   });
 
   describe('Tool 1: orchestrator_create_task', () => {
-    it('should successfully create a task with required parameters', async () => {
+    it('should successfully create a task with required parameters in stable JSON text format', async () => {
       const res = await client.callTool({
         name: 'orchestrator_create_task',
         arguments: {
@@ -204,9 +216,10 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       expect(res.content[0].type).toBe('text');
 
       const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
-      expect(parsed.id).toBe(sampleTaskRecord.id);
-      expect(parsed.prompt).toBe('Implement secure JWT authentication');
-      expect(parsed.targetRepoPath).toBe('/Users/lisong/code/my-project');
+      expect(parsed.ok).toBe(true);
+      expect(parsed.data.id).toBe(sampleTaskRecord.id);
+      expect(parsed.data.prompt).toBe('Implement secure JWT authentication');
+      expect(parsed.data.targetRepoPath).toBe('/Users/lisong/code/my-project');
 
       expect(mockOrchestrator.createTask).toHaveBeenCalledWith({
         repoPath: '/Users/lisong/code/my-project',
@@ -226,6 +239,8 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       });
 
       expect(res.isError).toBeFalsy();
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.ok).toBe(true);
       expect(mockOrchestrator.createTask).toHaveBeenCalledWith({
         repoPath: '/Users/lisong/code/my-project',
         prompt: 'Refactor database adapter',
@@ -233,7 +248,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       });
     });
 
-    it('should map orchestrator errors to structured tool error result', async () => {
+    it('should map orchestrator errors to structured tool error result with safe code and message', async () => {
       vi.mocked(mockOrchestrator.createTask).mockRejectedValueOnce(
         new Error('Invalid target repository path: path resolves outside /Users/lisong/code')
       );
@@ -247,9 +262,11 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       });
 
       expect(res.isError).toBe(true);
-      const text = (res.content[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('Invalid target repository path');
-      expect(text).toContain('/Users/lisong/code');
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.code).toBe('INVALID_PATH');
+      expect(parsed.error.message).toContain('Invalid target repository path');
+      expect(parsed.error.message).toContain('/Users/lisong/code');
     });
 
     it('should map non-Error exception to stringified tool error result', async () => {
@@ -266,8 +283,32 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       });
 
       expect(res.isError).toBe(true);
-      const text = (res.content[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('Raw string error from orchestrator');
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.code).toBe('ORCHESTRATION_ERROR');
+      expect(parsed.error.message).toContain('Raw string error from orchestrator');
+    });
+
+    it('should redact secrets in error response and omit raw stack traces', async () => {
+      const errWithStack = new Error(
+        'Failed to connect with token ghp_1234567890abcdef1234567890abcdef1234\n    at Object.createTask (/Users/lisong/code/src/secret.ts:42:15)'
+      );
+      vi.mocked(mockOrchestrator.createTask).mockRejectedValueOnce(errWithStack);
+
+      const res = await client.callTool({
+        name: 'orchestrator_create_task',
+        arguments: {
+          repoPath: '/Users/lisong/code/my-project',
+          prompt: 'Fix bug',
+        },
+      });
+
+      expect(res.isError).toBe(true);
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.message).not.toContain('ghp_1234567890abcdef1234567890abcdef1234');
+      expect(parsed.error.message).toContain('[REDACTED_GITHUB_TOKEN]');
+      expect(parsed.error.message).not.toContain('at Object.createTask');
     });
 
     it('should reject missing repoPath parameter', async () => {
@@ -370,7 +411,8 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       );
 
       const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
-      expect(parsed.state).toBe('AWAITING_HUMAN_APPROVAL');
+      expect(parsed.ok).toBe(true);
+      expect(parsed.data.state).toBe('AWAITING_HUMAN_APPROVAL');
     });
 
     it('should map task loop failure to structured tool error result', async () => {
@@ -386,8 +428,10 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       });
 
       expect(res.isError).toBe(true);
-      const text = (res.content[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('Task not found: task-non-existent');
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.code).toBe('TASK_NOT_FOUND');
+      expect(parsed.error.message).toContain('Task not found: task-non-existent');
     });
 
     it('should reject missing taskId parameter', async () => {
@@ -444,8 +488,9 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       );
 
       const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
-      expect(parsed.id).toBe('task-1740000000-implement-auth-ab12cd');
-      expect(parsed.state).toBe('WORKTREE_READY');
+      expect(parsed.ok).toBe(true);
+      expect(parsed.data.id).toBe('task-1740000000-implement-auth-ab12cd');
+      expect(parsed.data.state).toBe('WORKTREE_READY');
     });
 
     it('should map getTask errors to tool error result', async () => {
@@ -461,8 +506,10 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       });
 
       expect(res.isError).toBe(true);
-      const text = (res.content[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('Task not found: invalid-task-id');
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.code).toBe('TASK_NOT_FOUND');
+      expect(parsed.error.message).toContain('Task not found: invalid-task-id');
     });
 
     it('should reject missing or empty taskId', async () => {
@@ -503,9 +550,10 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       expect(mockOrchestrator.listTasks).toHaveBeenCalled();
 
       const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
-      expect(Array.isArray(parsed)).toBe(true);
-      expect(parsed).toHaveLength(1);
-      expect(parsed[0].id).toBe(sampleTaskRecord.id);
+      expect(parsed.ok).toBe(true);
+      expect(Array.isArray(parsed.data)).toBe(true);
+      expect(parsed.data).toHaveLength(1);
+      expect(parsed.data[0].id).toBe(sampleTaskRecord.id);
     });
 
     it('should map listTasks error to structured error result', async () => {
@@ -519,8 +567,10 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       });
 
       expect(res.isError).toBe(true);
-      const text = (res.content[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('Failed to read state directory');
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.code).toBe('ORCHESTRATION_ERROR');
+      expect(parsed.error.message).toContain('Failed to read state directory');
     });
 
     it('should reject unrecognized arbitrary filter arguments', async () => {
@@ -538,7 +588,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
   });
 
   describe('Tool 5: orchestrator_resume_task', () => {
-    it('should resume task with user guidance', async () => {
+    it('should resume task with user guidance in stable JSON text format', async () => {
       const res = await client.callTool({
         name: 'orchestrator_resume_task',
         arguments: {
@@ -552,37 +602,15 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
         'task-1740000000-implement-auth-ab12cd',
         {
           guidance: 'Handle null JWT tokens in authorization middleware',
-          override: undefined,
         }
       );
 
       const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
-      expect(parsed.state).toBe('AGY_FIXING');
+      expect(parsed.ok).toBe(true);
+      expect(parsed.data.state).toBe('AGY_FIXING');
     });
 
-    it('should resume task with override flag', async () => {
-      const res = await client.callTool({
-        name: 'orchestrator_resume_task',
-        arguments: {
-          taskId: 'task-1740000000-implement-auth-ab12cd',
-          override: true,
-        },
-      });
-
-      expect(res.isError).toBeFalsy();
-      expect(mockOrchestrator.resumeTask).toHaveBeenCalledWith(
-        'task-1740000000-implement-auth-ab12cd',
-        {
-          guidance: undefined,
-          override: true,
-        }
-      );
-
-      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
-      expect(parsed.state).toBe('AWAITING_HUMAN_OVERRIDE');
-    });
-
-    it('should resume task with no optional arguments', async () => {
+    it('should resume task with no optional guidance', async () => {
       const res = await client.callTool({
         name: 'orchestrator_resume_task',
         arguments: {
@@ -595,9 +623,25 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
         'task-1740000000-implement-auth-ab12cd',
         {
           guidance: undefined,
-          override: undefined,
         }
       );
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.ok).toBe(true);
+    });
+
+    it('should strictly reject override parameter (override is human-only outside MCP surface)', async () => {
+      const res = await client.callTool({
+        name: 'orchestrator_resume_task',
+        arguments: {
+          taskId: 'task-1740000000-implement-auth-ab12cd',
+          override: true,
+        } as unknown as Record<string, unknown>,
+      });
+
+      expect(res.isError).toBe(true);
+      const text = (res.content[0] as { type: 'text'; text: string }).text;
+      expect(text).toMatch(/unrecognized_keys|invalid/i);
+      expect(mockOrchestrator.resumeTask).not.toHaveBeenCalled();
     });
 
     it('should map resumeTask error to structured error result', async () => {
@@ -615,11 +659,13 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       });
 
       expect(res.isError).toBe(true);
-      const text = (res.content[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('Cannot resume task in state COMPLETED');
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.code).toBe('INVALID_STATE');
+      expect(parsed.error.message).toContain('Cannot resume task in state COMPLETED');
     });
 
-    it('should reject empty guidance or invalid override types', async () => {
+    it('should reject empty guidance', async () => {
       const resEmptyGuidance = await client.callTool({
         name: 'orchestrator_resume_task',
         arguments: {
@@ -628,15 +674,6 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
         },
       });
       expect(resEmptyGuidance.isError).toBe(true);
-
-      const resBadOverride = await client.callTool({
-        name: 'orchestrator_resume_task',
-        arguments: {
-          taskId: 'task-123',
-          override: 'yes' as unknown as boolean,
-        },
-      });
-      expect(resBadOverride.isError).toBe(true);
     });
 
     it('should reject unrecognized extra keys', async () => {
@@ -653,7 +690,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
   });
 
   describe('Tool 6: orchestrator_cancel_task', () => {
-    it('should successfully cancel a task with custom reason', async () => {
+    it('should successfully cancel a task with custom reason in stable JSON text format', async () => {
       const res = await client.callTool({
         name: 'orchestrator_cancel_task',
         arguments: {
@@ -669,7 +706,8 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       );
 
       const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
-      expect(parsed.state).toBe('ABORTED');
+      expect(parsed.ok).toBe(true);
+      expect(parsed.data.state).toBe('ABORTED');
     });
 
     it('should cancel task with default reason if none provided', async () => {
@@ -685,6 +723,8 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
         'task-1740000000-implement-auth-ab12cd',
         'Cancelled via MCP'
       );
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.ok).toBe(true);
     });
 
     it('should map cancelTask error to structured error result', async () => {
@@ -700,8 +740,10 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       });
 
       expect(res.isError).toBe(true);
-      const text = (res.content[0] as { type: 'text'; text: string }).text;
-      expect(text).toContain('Task not found: task-invalid');
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.code).toBe('TASK_NOT_FOUND');
+      expect(parsed.error.message).toContain('Task not found: task-invalid');
     });
 
     it('should reject missing or empty taskId', async () => {

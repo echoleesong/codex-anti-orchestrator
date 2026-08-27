@@ -3,9 +3,98 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { Orchestrator } from '../orchestrator/orchestrator.js';
 import type { IOrchestrator, OrchestratorMcpServerOptions } from '../types.js';
+import { redactSecrets } from '../utils/exec.js';
 
 export const MCP_SERVER_NAME = 'codex-anti-orchestrator';
 export const MCP_SERVER_VERSION = '0.1.0';
+
+export interface McpSuccessPayload<T> {
+  ok: true;
+  data: T;
+}
+
+export interface McpErrorPayload {
+  ok: false;
+  error: {
+    code: string;
+    message: string;
+  };
+}
+
+/**
+ * Formats a successful MCP tool response as stable JSON text.
+ */
+export function formatSuccessResponse<T>(data: T) {
+  const payload: McpSuccessPayload<T> = {
+    ok: true,
+    data,
+  };
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(payload, null, 2),
+      },
+    ],
+  };
+}
+
+/**
+ * Formats an MCP error response as stable JSON text with a bounded safe message,
+ * structured error code, and automated credential/secret redaction without raw stacks.
+ */
+export function formatErrorResponse(error: unknown) {
+  let rawMessage = '';
+  if (error instanceof Error) {
+    rawMessage = error.message;
+  } else if (typeof error === 'string') {
+    rawMessage = error;
+  } else {
+    rawMessage = String(error ?? 'Unknown error occurred');
+  }
+
+  // Strip any raw stack trace lines if present
+  const messageWithoutStack = rawMessage.split(/\n\s*at\s+/)[0]?.trim() || rawMessage.trim();
+
+  // Redact secrets and bound message length
+  const safeMessage = redactSecrets(messageWithoutStack).slice(0, 1000);
+
+  // Derive stable error code
+  let code = 'ORCHESTRATION_ERROR';
+  if (/task not found/i.test(safeMessage)) {
+    code = 'TASK_NOT_FOUND';
+  } else if (
+    /invalid.*path|outside.*allowed|not a valid git repository|isolation/i.test(safeMessage)
+  ) {
+    code = 'INVALID_PATH';
+  } else if (/cannot resume|cannot transition|invalid state|unhandled state/i.test(safeMessage)) {
+    code = 'INVALID_STATE';
+  } else if (/lock.*detected|index\.lock/i.test(safeMessage)) {
+    code = 'GIT_LOCK_ERROR';
+  } else if (/dirty|uncommitted/i.test(safeMessage)) {
+    code = 'REPO_DIRTY';
+  } else if (/empty|invalid|unrecognized|validation|schema/i.test(safeMessage)) {
+    code = 'VALIDATION_ERROR';
+  }
+
+  const payload: McpErrorPayload = {
+    ok: false,
+    error: {
+      code,
+      message: safeMessage || 'An orchestration error occurred.',
+    },
+  };
+
+  return {
+    isError: true,
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(payload, null, 2),
+      },
+    ],
+  };
+}
 
 /**
  * Creates and configures the Orchestrator MCP server instance.
@@ -63,24 +152,9 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
           prompt: args.prompt,
           baseBranch: args.baseBranch,
         });
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(task, null, 2),
-            },
-          ],
-        };
+        return formatSuccessResponse(task);
       } catch (error) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text',
-              text: error instanceof Error ? error.message : String(error),
-            },
-          ],
-        };
+        return formatErrorResponse(error);
       }
     }
   );
@@ -103,24 +177,9 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
     async (args) => {
       try {
         const task = await orchestrator.runTaskLoop(args.taskId);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(task, null, 2),
-            },
-          ],
-        };
+        return formatSuccessResponse(task);
       } catch (error) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text',
-              text: error instanceof Error ? error.message : String(error),
-            },
-          ],
-        };
+        return formatErrorResponse(error);
       }
     }
   );
@@ -143,24 +202,9 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
     async (args) => {
       try {
         const task = await orchestrator.getTask(args.taskId);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(task, null, 2),
-            },
-          ],
-        };
+        return formatSuccessResponse(task);
       } catch (error) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text',
-              text: error instanceof Error ? error.message : String(error),
-            },
-          ],
-        };
+        return formatErrorResponse(error);
       }
     }
   );
@@ -176,34 +220,20 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
     async () => {
       try {
         const tasks = await orchestrator.listTasks();
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(tasks, null, 2),
-            },
-          ],
-        };
+        return formatSuccessResponse(tasks);
       } catch (error) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text',
-              text: error instanceof Error ? error.message : String(error),
-            },
-          ],
-        };
+        return formatErrorResponse(error);
       }
     }
   );
 
-  // 5. orchestrator_resume_task (taskId, optional guidance, optional override)
+  // 5. orchestrator_resume_task (taskId, optional guidance)
+  // NOTE: Risk-acceptance override is strictly excluded from MCP surface to maintain human-only decision guarantees.
   server.registerTool(
     'orchestrator_resume_task',
     {
       description:
-        'Resumes a task from NEEDS_USER_DECISION or FAILED state, optionally providing additional guidance or overriding review warnings.',
+        'Resumes a task from NEEDS_USER_DECISION or FAILED state, optionally providing additional guidance instructions for retrying the fix cycle.',
       inputSchema: z
         .object({
           taskId: z
@@ -215,12 +245,6 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
             .min(1, 'guidance must not be empty')
             .optional()
             .describe('Optional guidance instructions for retrying the fix cycle'),
-          override: z
-            .boolean()
-            .optional()
-            .describe(
-              'Optional flag to accept PR with known warnings and transition to AWAITING_HUMAN_OVERRIDE'
-            ),
         })
         .strict(),
     },
@@ -228,26 +252,10 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
       try {
         const task = await orchestrator.resumeTask(args.taskId, {
           guidance: args.guidance,
-          override: args.override,
         });
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(task, null, 2),
-            },
-          ],
-        };
+        return formatSuccessResponse(task);
       } catch (error) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text',
-              text: error instanceof Error ? error.message : String(error),
-            },
-          ],
-        };
+        return formatErrorResponse(error);
       }
     }
   );
@@ -275,24 +283,9 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
     async (args) => {
       try {
         const task = await orchestrator.cancelTask(args.taskId, args.reason || 'Cancelled via MCP');
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(task, null, 2),
-            },
-          ],
-        };
+        return formatSuccessResponse(task);
       } catch (error) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text',
-              text: error instanceof Error ? error.message : String(error),
-            },
-          ],
-        };
+        return formatErrorResponse(error);
       }
     }
   );
