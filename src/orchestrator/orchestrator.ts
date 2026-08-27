@@ -1,3 +1,6 @@
+import { AgyAdapter } from '../adapters/agy-adapter.js';
+import { CodexAdapter } from '../adapters/codex-adapter.js';
+import { GitHubPRAdapter } from '../adapters/github-pr-adapter.js';
 import {
   checkGitCleanliness,
   checkGitLockfile,
@@ -20,16 +23,47 @@ import {
   saveTaskState,
   transitionTaskState,
 } from '../state/state-machine.js';
-import type { CreateTaskOptions, ResumeTaskOptions, TaskRecord } from '../types.js';
+import type {
+  CommandExecutor,
+  CreateTaskOptions,
+  ResumeTaskOptions,
+  TaskRecord,
+  TaskState,
+} from '../types.js';
 import { defaultExecutor } from '../utils/exec.js';
+
+export interface RunLoopOptions {
+  executor?: CommandExecutor;
+  maxReviewCycles?: number;
+  skipTests?: boolean;
+  testRunner?: (
+    worktreePath: string,
+    executor: CommandExecutor
+  ) => Promise<{ pass: boolean; errors?: string }>;
+}
 
 export class Orchestrator {
   private stateDir: string;
   private allowedBaseDir: string;
+  private defaultExecutor: CommandExecutor;
+  private agyAdapter: AgyAdapter;
+  private codexAdapter: CodexAdapter;
+  private prAdapter: GitHubPRAdapter;
 
-  constructor(options: { stateDir?: string; allowedBaseDir?: string } = {}) {
+  constructor(
+    options: {
+      stateDir?: string;
+      allowedBaseDir?: string;
+      executor?: CommandExecutor;
+    } = {}
+  ) {
     this.stateDir = options.stateDir || getDefaultStateDir();
     this.allowedBaseDir = options.allowedBaseDir || DEFAULT_ALLOWED_BASE_DIR;
+    this.defaultExecutor = options.executor || defaultExecutor;
+
+    this.agyAdapter = new AgyAdapter(this.defaultExecutor);
+    this.codexAdapter = new CodexAdapter(this.defaultExecutor);
+    this.prAdapter = new GitHubPRAdapter(this.defaultExecutor);
   }
 
   getStateDir(): string {
@@ -45,9 +79,10 @@ export class Orchestrator {
    * Enforces path safety, state isolation, git cleanliness, and isolated external worktrees.
    */
   async createTask(options: CreateTaskOptions): Promise<TaskRecord> {
-    const executor = options.executor || defaultExecutor;
+    const executor = options.executor || this.defaultExecutor;
     const allowedBase = options.allowedBaseDir || this.allowedBaseDir;
     const stateDir = options.stateDir || this.stateDir;
+    const maxReviewCycles = options.maxReviewCycles ?? 3;
 
     // 1. Validate Target Repository Path
     const pathCheck = validateTargetRepoPath(options.repoPath, allowedBase);
@@ -68,7 +103,7 @@ export class Orchestrator {
       throw new Error(`Directory is not a valid Git repository: ${targetRepoPath}`);
     }
 
-    // 4. Inspect Git Lockfile (Fail fast if locked or if check cannot be completed; NEVER auto-delete lock files)
+    // 4. Inspect Git Lockfile (Fail fast if locked; NEVER auto-delete lock files)
     const lockCheck = await checkGitLockfile(targetRepoPath, executor);
     if (lockCheck.error) {
       throw new Error(
@@ -109,7 +144,7 @@ export class Orchestrator {
       transitions: [],
       diagnostics: {
         reviewCycles: 0,
-        maxReviewCycles: 3,
+        maxReviewCycles,
         resumePossible: false,
         worktreePreserved: true,
       },
@@ -150,6 +185,323 @@ export class Orchestrator {
       reason: 'External worktree allocated and validated. Ready for agent development invocation.',
     });
     await saveTaskState(stateDir, task);
+
+    return task;
+  }
+
+  /**
+   * Helper to commit current changes in the isolated worktree.
+   */
+  private async commitWorktreeChanges(
+    worktreePath: string,
+    commitMessage: string,
+    executor: CommandExecutor
+  ): Promise<boolean> {
+    await executor('git', ['add', '-A'], { cwd: worktreePath });
+    const diffRes = await executor('git', ['diff', '--cached', '--name-only'], {
+      cwd: worktreePath,
+    });
+
+    if (!diffRes.stdout.trim()) {
+      return false; // No changes to commit
+    }
+
+    const commitRes = await executor('git', ['commit', '-m', commitMessage], {
+      cwd: worktreePath,
+    });
+    return commitRes.exitCode === 0;
+  }
+
+  /**
+   * Helper to execute automated tests in the worktree.
+   */
+  private async runWorktreeTests(
+    worktreePath: string,
+    executor: CommandExecutor,
+    customRunner?: (
+      worktreePath: string,
+      executor: CommandExecutor
+    ) => Promise<{ pass: boolean; errors?: string }>
+  ): Promise<{ pass: boolean; errors?: string }> {
+    if (customRunner) {
+      return customRunner(worktreePath, executor);
+    }
+
+    const testRes = await executor('npm', ['test'], { cwd: worktreePath });
+    if (testRes.exitCode === 0) {
+      return { pass: true };
+    }
+
+    return {
+      pass: false,
+      errors:
+        testRes.stderr.trim() || testRes.stdout.trim() || 'Tests failed with non-zero exit code.',
+    };
+  }
+
+  /**
+   * Executes the full controlled development, review, and fix state loop.
+   */
+  async runTaskLoop(taskId: string, loopOptions: RunLoopOptions = {}): Promise<TaskRecord> {
+    const executor = loopOptions.executor || this.defaultExecutor;
+    const agy = new AgyAdapter(executor);
+    const codex = new CodexAdapter(executor);
+    const pr = new GitHubPRAdapter(executor);
+
+    let task = await this.getTask(taskId);
+
+    // Loop continues until a stopping state is reached:
+    // Terminal / Human gate states: AWAITING_HUMAN_APPROVAL, NEEDS_USER_DECISION, AWAITING_HUMAN_OVERRIDE, COMPLETED, FAILED, ABORTED
+    while (
+      task.state !== 'AWAITING_HUMAN_APPROVAL' &&
+      task.state !== 'NEEDS_USER_DECISION' &&
+      task.state !== 'AWAITING_HUMAN_OVERRIDE' &&
+      task.state !== 'COMPLETED' &&
+      task.state !== 'FAILED' &&
+      task.state !== 'ABORTED'
+    ) {
+      try {
+        switch (task.state) {
+          case 'WORKTREE_READY': {
+            // 1. Transition to AGY_DEVELOPING
+            transitionTaskState(task, 'AGY_DEVELOPING', {
+              reason: 'Invoking agy for autonomous code generation and tests.',
+            });
+            await saveTaskState(this.stateDir, task);
+
+            // 2. Invoke agy in isolated external worktree with --sandbox
+            const agyRes = await agy.runDevelopment(task.worktreePath, task.prompt, {
+              targetRepoPath: task.targetRepoPath,
+              stateDir: this.stateDir,
+              executor,
+            });
+
+            if (!agyRes.success) {
+              transitionTaskState(task, 'FAILED', {
+                reason: 'agy development execution failed.',
+                error: agyRes.error,
+              });
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            // 3. Commit changes & push branch
+            await this.commitWorktreeChanges(
+              task.worktreePath,
+              `feat: ${task.prompt.slice(0, 50).trim()}`,
+              executor
+            );
+
+            const pushRes = await pr.pushTaskBranch(task.worktreePath, task.taskBranch, executor);
+            if (!pushRes.success) {
+              transitionTaskState(task, 'FAILED', {
+                reason: 'Failed to push task branch to remote origin.',
+                error: pushRes.error,
+              });
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            // 4. Transition to PR_CREATING and open PR
+            transitionTaskState(task, 'PR_CREATING', {
+              reason: 'Opening GitHub Pull Request for task branch.',
+            });
+            await saveTaskState(this.stateDir, task);
+
+            const prRes = await pr.createPR({
+              worktreePath: task.worktreePath,
+              branch: task.taskBranch,
+              baseBranch: task.baseBranch,
+              title: `feat: ${task.prompt.slice(0, 60).trim()}`,
+              body: `Automated PR generated for task: ${task.id}\n\nPrompt: ${task.prompt}`,
+              executor,
+            });
+
+            if (!prRes.success) {
+              transitionTaskState(task, 'FAILED', {
+                reason: 'Failed to create GitHub Pull Request.',
+                error: prRes.error,
+              });
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            task.metadata = {
+              ...(task.metadata || {}),
+              prUrl: prRes.prUrl,
+              prNumber: prRes.prNumber,
+            };
+
+            // Transition PR_CREATING -> CODEX_REVIEWING
+            transitionTaskState(task, 'CODEX_REVIEWING', {
+              reason: 'PR published. Starting read-only Codex review.',
+            });
+            await saveTaskState(this.stateDir, task);
+            break;
+          }
+
+          case 'CODEX_REVIEWING': {
+            // Invoke Codex review in read-only sandbox mode
+            const reviewResult = await codex.review({
+              worktreePath: task.worktreePath,
+              prNumberOrBranch: task.taskBranch,
+              executor,
+            });
+
+            task.diagnostics.lastReviewVerdict = reviewResult.verdict;
+
+            // Transition CODEX_REVIEWING -> REVIEW_EVALUATING
+            transitionTaskState(task, 'REVIEW_EVALUATING', {
+              reason: `Codex review completed with verdict: ${reviewResult.verdict}`,
+            });
+            await saveTaskState(this.stateDir, task);
+
+            // Run automated tests in worktree
+            let testPassed = true;
+            let testErrors: string | undefined;
+
+            if (!loopOptions.skipTests) {
+              const testResult = await this.runWorktreeTests(
+                task.worktreePath,
+                executor,
+                loopOptions.testRunner
+              );
+              testPassed = testResult.pass;
+              testErrors = testResult.errors;
+            }
+
+            task.diagnostics.lastTestPassed = testPassed;
+
+            const reviewClean =
+              reviewResult.verdict === 'APPROVE' && reviewResult.blockingIssues.length === 0;
+
+            // Decision logic in REVIEW_EVALUATING:
+            if (testPassed && reviewClean) {
+              // 100% clean pass -> AWAITING_HUMAN_APPROVAL
+              transitionTaskState(task, 'AWAITING_HUMAN_APPROVAL', {
+                reason:
+                  'All automated tests passed and Codex review reported zero blocking issues.',
+                reviewClean: true,
+                testsPass: true,
+              });
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            // If not clean, check if we can fix or must stop for user decision
+            if (reviewResult.verdict === 'NEEDS_USER_DECISION') {
+              transitionTaskState(task, 'NEEDS_USER_DECISION', {
+                reason: 'Codex review indicated NEEDS_USER_DECISION or unparseable output.',
+              });
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            if (task.diagnostics.reviewCycles >= task.diagnostics.maxReviewCycles) {
+              transitionTaskState(task, 'NEEDS_USER_DECISION', {
+                reason: `Reached maximum review cycles (${task.diagnostics.maxReviewCycles}) with unresolved issues.`,
+              });
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            // Can attempt fix cycle
+            task.diagnostics.reviewCycles += 1;
+            transitionTaskState(task, 'AGY_FIXING', {
+              reason: `Attempting automated fix iteration ${task.diagnostics.reviewCycles} of ${task.diagnostics.maxReviewCycles}.`,
+            });
+            task.metadata = {
+              ...(task.metadata || {}),
+              lastFeedback: {
+                blockingIssues: reviewResult.blockingIssues,
+                warnings: reviewResult.warnings,
+                testErrors,
+              },
+            };
+            await saveTaskState(this.stateDir, task);
+            break;
+          }
+
+          case 'AGY_FIXING': {
+            const feedback = (task.metadata?.lastFeedback as {
+              blockingIssues: string[];
+              warnings?: string[];
+              testErrors?: string;
+            }) || {
+              blockingIssues: ['Please resolve issues found in testing/review.'],
+            };
+
+            const fixRes = await agy.runFix(task.worktreePath, task.prompt, feedback, {
+              targetRepoPath: task.targetRepoPath,
+              stateDir: this.stateDir,
+              executor,
+            });
+
+            if (!fixRes.success) {
+              transitionTaskState(task, 'FAILED', {
+                reason: 'agy fix execution failed.',
+                error: fixRes.error,
+              });
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            // Commit fix changes
+            await this.commitWorktreeChanges(
+              task.worktreePath,
+              `fix: resolve review feedback and test failures (cycle ${task.diagnostics.reviewCycles})`,
+              executor
+            );
+
+            // Push updated changes to task branch
+            const pushRes = await pr.pushTaskBranch(task.worktreePath, task.taskBranch, executor);
+            if (!pushRes.success) {
+              transitionTaskState(task, 'FAILED', {
+                reason: 'Failed to push fix commits to task branch.',
+                error: pushRes.error,
+              });
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            // Transition AGY_FIXING -> PR_UPDATING
+            transitionTaskState(task, 'PR_UPDATING', {
+              reason: 'Pushed fix commits to task branch and updated PR.',
+            });
+            await saveTaskState(this.stateDir, task);
+
+            // Update PR with iteration comment
+            await pr.updatePR({
+              worktreePath: task.worktreePath,
+              prNumberOrBranch: task.taskBranch,
+              comment: `Iterative fix committed for cycle ${task.diagnostics.reviewCycles}/${task.diagnostics.maxReviewCycles}.`,
+              executor,
+            });
+
+            // Transition PR_UPDATING -> CODEX_REVIEWING
+            transitionTaskState(task, 'CODEX_REVIEWING', {
+              reason: 'Fix pushed. Triggering re-review with Codex.',
+            });
+            await saveTaskState(this.stateDir, task);
+            break;
+          }
+
+          default: {
+            throw new Error(`Unhandled state in task loop: ${task.state}`);
+          }
+        }
+      } catch (err) {
+        const curState = task.state as TaskState;
+        if (curState !== 'FAILED' && curState !== 'ABORTED') {
+          transitionTaskState(task, 'FAILED', {
+            reason: 'Task loop encountered unhandled error.',
+            error: err instanceof Error ? err.message : String(err),
+          });
+          await saveTaskState(this.stateDir, task);
+        }
+        return task;
+      }
+    }
 
     return task;
   }

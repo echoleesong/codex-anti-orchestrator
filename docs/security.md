@@ -46,39 +46,58 @@ This document defines the security boundaries, operational constraints, and safe
   - `AWAITING_HUMAN_APPROVAL`: Strictly reserved for 100% clean passes (all automated tests green + zero Codex review blocking issues).
   - `AWAITING_HUMAN_OVERRIDE`: Explicitly flags unresolved risks or warnings when user manually overrides iteration limits. Never treated as clean or auto-mergeable.
 - **No Auto-Deploy**: The pipeline stops at human review states (`AWAITING_HUMAN_APPROVAL` or `AWAITING_HUMAN_OVERRIDE`). Deployment workflows must be triggered exclusively through established, human-approved CI/CD gates.
+- **Protected Branch Shield**: Pushes to `main`, `master`, `release`, `production`, `prod`, and `develop` are rejected at the adapter boundary before any Git network command is issued.
 
-### 2.6 Token and Credential Safety
+### 2.6 Safe Child Process Abstraction & Argument Arrays
 
-- **No Embedded Credentials**: No API keys, GitHub PATs, OpenAI tokens, or session IDs may be hardcoded or written to tracked files.
-- **Environment & Keyring Resolution**: Authentication must rely on system keyrings (`gh auth`) or standard environment variables loaded at runtime.
-- **Log Sanitization**: Orchestrator logs must filter out authorization headers, bearer tokens, and sensitive query strings before logging to stdout or disk.
+- **No Shell Execution**: All external commands (`git`, `gh`, `agy`, `codex`) are invoked strictly through explicit argument arrays (`execFile` with `shell: false`). Command strings are never concatenated into shell execution pipelines.
+- **Pre-execution Flag Rejection**: The executor intercepts arguments before process spawn. Any argument matching forbidden flags (including `--dangerously-skip-permissions` and `--dangerously-skip-permissions=...`) causes immediate execution abort with a security violation error.
+- **Resource and Timeout Bounding**: Processes run with strict timeout limits (default 60s, configurable) and bounded stdout/stderr buffers (10MB default) to prevent runaway memory usage or hangs.
 
-### 2.7 Codex CLI Read-Only Review Constraint
+### 2.7 Automated Secret & Token Redaction
 
-- **Review-Only Mode**: During the review phase, OpenAI Codex CLI (`codex`) is invoked strictly in read-only analysis mode.
+- **Zero Secret Persistence**: No API keys, GitHub PATs, OpenAI tokens, or session IDs may be hardcoded or written to tracked files.
+- **Environment & Keyring Resolution**: Authentication relies on system keyrings (`gh auth`) or environment variables loaded dynamically at runtime.
+- **Stream Scrubbing**: All process outputs (`stdout`, `stderr`, error messages) pass through automated regex redaction scrubbing:
+  - GitHub PATs / OAuth tokens (`ghp_*`, `github_pat_*`, `gho_*`, `ghu_*`, `ghs_*`, `ghr_*`) -> `[REDACTED_GITHUB_TOKEN]`
+  - OpenAI API keys (`sk-*`, `sk-proj-*`) -> `[REDACTED_OPENAI_KEY]`
+  - Anthropic API keys (`sk-ant-*`) -> `[REDACTED_ANTHROPIC_KEY]`
+  - Bearer authorization headers -> `Bearer [REDACTED_BEARER_TOKEN]`
+  - Basic auth in URLs (`https://user:pass@host`) -> `https://user:[REDACTED_PASSWORD]@host`
+  - Key-value secret assignments in configuration and logs.
+
+### 2.8 Codex CLI Read-Only Review & Fail-Safe Parsing
+
+- **Review-Only Mode**: During the review phase, OpenAI Codex CLI (`codex`) is invoked strictly with read-only flags (`review --read-only --format json`).
 - **No Code Mutation**: Codex must inspect git diffs, ASTs, and PR metadata to produce structured comments and suggestions, but is strictly disallowed from writing files or making commits directly.
+- **Fail-Safe Verdict Parsing**:
+  - Valid verdicts: `APPROVE`, `CHANGES_REQUIRED`, `NEEDS_USER_DECISION`.
+  - An `APPROVE` verdict with residual blocking issues is automatically downgraded to `CHANGES_REQUIRED`.
+  - Empty, malformed, non-JSON, or unparseable review outputs fail safe directly to `NEEDS_USER_DECISION`, halting automated loops and preventing unauthorized progression.
 
-### 2.8 Safe Antigravity CLI (`agy`) Execution
+### 2.9 Safe Antigravity CLI (`agy`) Execution & Statelessness
 
 - **Forbidden Flags**: Invoking `agy` with `--dangerously-skip-permissions` is strictly prohibited under all circumstances.
-- **Sandbox Compliance**: Agent operations must run within standard tool permission boundaries and respect OS-level sandbox isolation.
+- **Sandbox Compliance**: Agent operations are explicitly invoked with `--sandbox` and confined to the isolated external worktree.
+- **Stateless Invocation**: `agy` tasks are self-contained per iteration with explicit prompt context. No false promises of internal daemon session resumption are made.
 
-### 2.9 System Integrity & Non-Invasiveness
+### 2.10 GitHub PR Adapter Boundaries
 
-- **No Unauthorized Daemons**: The orchestrator must not install global `launchd` / `systemd` daemons without explicit user consent.
-- **No Global Shell Mutation**: The orchestrator will not modify global shell configuration files (`~/.zshrc`, `~/.bashrc`, `~/.profile`).
-- **No Cross-Project Interference**: Operations are strictly scoped to the configured workspace and cannot alter external project repositories (such as `xingce` or sibling tools).
+- **Allowed Actions**: Limited strictly to PR metadata operations: `create`, `view`, `update`, and `checks`.
+- **Forbidden Actions**: Any operation containing `merge`, `workflow`, `release`, `deploy`, `dispatch`, or `publish` is rejected by assertion.
+- **Task Branch Restriction**: Pushes are strictly restricted to `anti/*` branches.
 
 ---
 
 ## 3. Threat Model & Mitigations
 
-| Threat                                            | Impact                                      | Mitigation Enforced                                                                                                                                |
-| :------------------------------------------------ | :------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Agent hallucinating destructive shell command** | Loss of local files or workspace corruption | External worktree isolation (`~/.codex-anti-orchestrator/worktrees/`) + prohibition of permission bypass flags (`--dangerously-skip-permissions`). |
-| **Target repository path traversal**              | Unauthorized repository modification        | Strict confinement to `/Users/lisong/code` + realpath canonical validation.                                                                        |
-| **Git lock race condition / corruption**          | Corrupted git index or repository loss      | Fast-fail lock detection with explicit prohibition of automatic lockfile deletion.                                                                 |
-| **Accidental secret leak**                        | Exposed API tokens or GitHub credentials    | Strict `.gitignore`, secret scrubbing in logs, and no token persistence in codebase.                                                               |
-| **Unintended code merge to production**           | Defective code shipped to users             | Hard block on automatic merge commands; mandatory human PR approval gate.                                                                          |
-| **Review tool mutating code during analysis**     | Unaudited and unverified modifications      | Codex CLI runs strictly in read-only inspection mode.                                                                                              |
-| **Cross-repository or in-repo pollution**         | Residual files or corrupted workspace       | Worktrees strictly located in dedicated external orchestrator state directory with path isolation validation.                                      |
+| Threat                                            | Impact                                      | Mitigation Enforced                                                                                                                   |
+| :------------------------------------------------ | :------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------ |
+| **Agent hallucinating destructive shell command** | Loss of local files or workspace corruption | Argument arrays only (`shell: false`) + external worktree isolation + prohibition of bypass flags (`--dangerously-skip-permissions`). |
+| **Target repository path traversal**              | Unauthorized repository modification        | Strict confinement to `/Users/lisong/code` + realpath canonical validation.                                                           |
+| **Git lock race condition / corruption**          | Corrupted git index or repository loss      | Fast-fail lock detection with explicit prohibition of automatic lockfile deletion.                                                    |
+| **Accidental secret leak in stdout / logs**       | Exposed API tokens or GitHub credentials    | Strict `.gitignore`, automated multi-pattern secret scrubbing in process streams, and no token persistence in codebase.               |
+| **Unintended code merge to production**           | Defective code shipped to users             | Hard block on automatic merge commands; mandatory human PR approval gate; protected branch push shield.                               |
+| **Review tool mutating code during analysis**     | Unaudited and unverified modifications      | Codex CLI runs strictly in read-only inspection mode.                                                                                 |
+| **Malformed review output causing false bypass**  | Bugs merged without proper verification     | Fail-safe verdict parser defaults unparseable/empty output to `NEEDS_USER_DECISION`.                                                  |
+| **Cross-repository or in-repo pollution**         | Residual files or corrupted workspace       | Worktrees strictly located in dedicated external orchestrator state directory with path isolation validation.                         |

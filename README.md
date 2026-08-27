@@ -98,16 +98,34 @@ npm run doctor
 npm run doctor -- --json
 ```
 
+### Orchestrator CLI Commands
+
+```bash
+# 1. Initialize a new development task and allocate external worktree
+npx tsx src/cli.ts create --repo /Users/lisong/code/my-project --prompt "Implement user auth"
+
+# 2. Run the automated development, PR, and review state loop
+npx tsx src/cli.ts run <taskId>
+
+# 3. Check status of a specific task or list all tasks
+npx tsx src/cli.ts status <taskId>
+npx tsx src/cli.ts status --all
+
+# 4. Resume a task with human override or additional guidance
+npx tsx src/cli.ts resume <taskId> --override
+npx tsx src/cli.ts resume <taskId> --guidance "Fix null pointer in session handler"
+
+# 5. Cancel an active task while preserving its worktree
+npx tsx src/cli.ts cancel <taskId> --reason "User requested stop"
+```
+
 ### Development & Testing
 
 ```bash
-# Install dependencies
-npm install
-
 # Type checking
 npm run typecheck
 
-# Run test suite (unit + real CLI integration tests)
+# Run test suite (unit + integration + adapter tests)
 npm test
 
 # Format checking
@@ -122,7 +140,33 @@ npm run build
 
 ---
 
-## 6. Documentation Index
+## 6. Phase 3 Safety & Control Guarantees
 
-- [Security Model & Constraints](docs/security.md): Detailed external worktree isolation, token safety, read-only constraints, and permission boundaries.
-- [State Machine & Failure Handling](docs/state-machine.md): Task state definitions, `NEEDS_USER_DECISION` vs `AWAITING_HUMAN_APPROVAL` vs `AWAITING_HUMAN_OVERRIDE`, retry backoff, and stop conditions.
+1. **Safe Child Process Abstraction**:
+   - Strictly uses argument arrays only (`execFile` with `shell: false`).
+   - Configurable timeouts and bounded stdout/stderr buffers (prevent memory leaks / hangs).
+   - Exit code, signal tracking, and automated secret redaction (GitHub tokens, OpenAI/Anthropic keys, Bearer headers, password-embedded URLs).
+   - Pre-execution rejection of forbidden flags (`--dangerously-skip-permissions`).
+2. **Antigravity CLI (`agy`) Adapter**:
+   - Validates external worktree location outside target repository.
+   - Invokes `agy` with `--sandbox` and structured development/fix prompts.
+   - Fully stateless per invocation (no false promise of internal daemon resume).
+3. **OpenAI Codex CLI (`codex`) Adapter**:
+   - Operates in strictly read-only sandbox mode (`review --read-only --format json`).
+   - Validates structured verdicts: `APPROVE`, `CHANGES_REQUIRED`, `NEEDS_USER_DECISION`.
+   - Fail-safe fallback: malformed, unparseable, or absent output automatically defaults to `NEEDS_USER_DECISION`.
+4. **GitHub PR Adapter (`gh`)**:
+   - Manages PR metadata only (`create`, `view`, `update`, `checks`).
+   - Hard block on auto-merge (`gh pr merge`), workflow dispatch, release creation, and deployments.
+   - Strictly blocks direct pushes to `main` and protected branches; enforces `anti/*` task branches.
+5. **Controlled State Loop**:
+   - Enforces legal state machine transitions and bounded iteration cycles (`MAX_REVIEW_CYCLES = 3`).
+   - `AWAITING_HUMAN_APPROVAL` is strictly guarded: requires both automated tests green AND Codex review `APPROVE`.
+   - Preserves diagnostics and isolated worktrees on decision, override, or failure.
+
+---
+
+## 7. Documentation Index
+
+- [Security Model & Constraints](docs/security.md): Detailed external worktree isolation, secret scrubbing, process safety, and permission boundaries.
+- [State Machine & Failure Handling](docs/state-machine.md): Task state definitions, `NEEDS_USER_DECISION` vs `AWAITING_HUMAN_APPROVAL` vs `AWAITING_HUMAN_OVERRIDE`, iteration limits, and stop conditions.

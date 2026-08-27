@@ -88,14 +88,18 @@ To prevent infinite loops between `CODEX_REVIEWING` and `AGY_FIXING` and guarant
 - **Maximum Review-Fix Cycles (`MAX_REVIEW_CYCLES`)**: Default: `3`.
 - **Strict Invariant for `AWAITING_HUMAN_APPROVAL`**:
   - `AWAITING_HUMAN_APPROVAL` is **strictly unreachable** from `NEEDS_USER_DECISION`.
-  - It can **only** be reached when **both** conditions are explicitly true:
-    1. **`testsPass === true`**: All automated tests pass (`npm test`, `npm run typecheck`, etc.).
-    2. **`reviewClean === true`**: Codex review reports zero blocking issues.
-    3. Missing (undefined or null) parameters are strictly rejected.
+  - It can **only** be reached directly from `REVIEW_EVALUATING` when **both** conditions are explicitly true:
+    1.  **`testsPass === true`**: All automated tests pass (`npm test`, `npm run typecheck`, etc.).
+    2.  **`reviewClean === true`**: Codex review reports `verdict === 'APPROVE'` with zero blocking issues.
+    3.  Missing (undefined or null) parameters are strictly rejected.
+- **Fail-Safe Fallback in Review Parsing**:
+  - If Codex CLI output is missing, blank, malformed, non-JSON, or produces an unparseable verdict, the parser fails safe to `NEEDS_USER_DECISION`.
+  - When `NEEDS_USER_DECISION` is entered, automated fixing halts immediately, diagnostics are saved, and the isolated worktree is preserved for operator inspection.
 - **Handling Unresolved Cycles (`NEEDS_USER_DECISION` & `AWAITING_HUMAN_OVERRIDE`)**:
   - If blocking issues or failing tests remain after `MAX_REVIEW_CYCLES` attempts, the state machine enters **`NEEDS_USER_DECISION`**.
   - If the human operator decides to accept the PR with known, documented warnings, it transitions to **`AWAITING_HUMAN_OVERRIDE`** (not `AWAITING_HUMAN_APPROVAL`).
   - In `AWAITING_HUMAN_OVERRIDE`, remaining risks are explicitly flagged, the worktree is preserved, and merge operations must be performed manually by the human maintainer.
+  - If the human operator provides additional guidance (`--guidance "<instructions>"`), the task transitions to `AGY_FIXING` to resume the automated loop.
 
 ---
 
