@@ -8,26 +8,38 @@ This document defines the security boundaries, operational constraints, and safe
 
 1. **Defense in Depth**: Every automated component operates under the principle of least privilege.
 2. **Strict Human Gatekeeping**: Automated agents may produce, test, and review code, but only human operators may approve merges or trigger deployments.
-3. **External Workspace Isolation**: Tasks and runtime state must be located strictly outside the target repository to avoid polluting the host workspace.
-4. **Zero Secret Persistence**: Authentication credentials, personal access tokens, and sensitive machine configurations must never be persisted in repository files or build artifacts.
+3. **External Workspace & State Isolation**: Tasks, runtime state (`state.json`), and temporary Git worktrees must be located strictly outside the target repository to avoid polluting the host workspace.
+4. **Strict Repository Boundaries**: Production daemon strictly enforces that target repositories reside exclusively under `/Users/lisong/code`.
+5. **Zero Secret Persistence**: Authentication credentials, personal access tokens, and sensitive machine configurations must never be persisted in repository files or build artifacts.
 
 ---
 
 ## 2. Security Boundaries & Constraints
 
-### 2.1 External Worktree & State Isolation
+### 2.1 External Worktree & State Directory Isolation
 
 - **Orchestrator State Directory**: All runtime task execution, metadata, and temporary Git worktrees reside strictly outside the target repository under the orchestrator state directory (e.g. `~/.codex-anti-orchestrator/worktrees/<task-id>` or `$XDG_STATE_HOME/codex-anti-orchestrator/worktrees/<task-id>`).
+- **State Path Validation**: The state directory path is validated via canonical `realpath` and parent hierarchy checks. State directories located inside the target repository or pointing to it via symlink escapes are strictly rejected.
 - **Zero In-Repo Pollution**: The target repository directory remains clean, with no temporary subdirectories, untracked generated files, or local Git lock contention.
 - **State Preservation**: When a task enters `AWAITING_HUMAN_APPROVAL`, `NEEDS_USER_DECISION`, `AWAITING_HUMAN_OVERRIDE`, or `FAILED`, the worktree is preserved in the state directory for inspection and debugging before explicit cleanup on `COMPLETED` or `ABORTED`.
 
-### 2.2 Minimal GitHub CLI (`gh`) Permissions
+### 2.2 Production Target Path Confinement
+
+- **Allowed Base Directory**: The CLI strictly enforces that target repositories must reside within `/Users/lisong/code` project subdirectories.
+- **Traversal Protection**: Relative paths with `..`, root path attempts, and symlinks resolving outside `/Users/lisong/code` are halted with permission denial errors.
+
+### 2.3 Git Lockfile Safety
+
+- **Strict Read-Only Inspection**: When creating tasks, the orchestrator inspects the target repository for lock files (`.git/index.lock`, etc.).
+- **No Automatic Lock Deletion**: If a lock file exists or if lock inspection fails, task creation is immediately aborted to prevent race conditions. The orchestrator never automatically deletes lock files.
+
+### 2.4 Minimal GitHub CLI (`gh`) Permissions
 
 - **Scope Limitation**: GitHub authentication must be limited strictly to standard developer repository scopes (`repo`, `read:org`, `workflow`).
 - **No Privilege Escalation**: The orchestrator must not request admin privileges, organization management scopes, or user key modifications.
 - **Read-Only Diagnostics**: Diagnostic commands (`doctor`) strictly read local or API status without creating repositories, tokens, or SSH keys.
 
-### 2.3 Strict Prohibition of Auto-Merge & Auto-Deploy
+### 2.5 Strict Prohibition of Auto-Merge & Auto-Deploy
 
 - **No Auto-Merge**: The daemon and review agents are strictly prohibited from executing `gh pr merge`, fast-forwarding `main`, or bypassing branch protection rules.
 - **Strict Separation of Approval States**:
@@ -35,23 +47,23 @@ This document defines the security boundaries, operational constraints, and safe
   - `AWAITING_HUMAN_OVERRIDE`: Explicitly flags unresolved risks or warnings when user manually overrides iteration limits. Never treated as clean or auto-mergeable.
 - **No Auto-Deploy**: The pipeline stops at human review states (`AWAITING_HUMAN_APPROVAL` or `AWAITING_HUMAN_OVERRIDE`). Deployment workflows must be triggered exclusively through established, human-approved CI/CD gates.
 
-### 2.4 Token and Credential Safety
+### 2.6 Token and Credential Safety
 
 - **No Embedded Credentials**: No API keys, GitHub PATs, OpenAI tokens, or session IDs may be hardcoded or written to tracked files.
 - **Environment & Keyring Resolution**: Authentication must rely on system keyrings (`gh auth`) or standard environment variables loaded at runtime.
 - **Log Sanitization**: Orchestrator logs must filter out authorization headers, bearer tokens, and sensitive query strings before logging to stdout or disk.
 
-### 2.5 Codex CLI Read-Only Review Constraint
+### 2.7 Codex CLI Read-Only Review Constraint
 
 - **Review-Only Mode**: During the review phase, OpenAI Codex CLI (`codex`) is invoked strictly in read-only analysis mode.
 - **No Code Mutation**: Codex must inspect git diffs, ASTs, and PR metadata to produce structured comments and suggestions, but is strictly disallowed from writing files or making commits directly.
 
-### 2.6 Safe Antigravity CLI (`agy`) Execution
+### 2.8 Safe Antigravity CLI (`agy`) Execution
 
 - **Forbidden Flags**: Invoking `agy` with `--dangerously-skip-permissions` is strictly prohibited under all circumstances.
 - **Sandbox Compliance**: Agent operations must run within standard tool permission boundaries and respect OS-level sandbox isolation.
 
-### 2.7 System Integrity & Non-Invasiveness
+### 2.9 System Integrity & Non-Invasiveness
 
 - **No Unauthorized Daemons**: The orchestrator must not install global `launchd` / `systemd` daemons without explicit user consent.
 - **No Global Shell Mutation**: The orchestrator will not modify global shell configuration files (`~/.zshrc`, `~/.bashrc`, `~/.profile`).
@@ -64,7 +76,9 @@ This document defines the security boundaries, operational constraints, and safe
 | Threat                                            | Impact                                      | Mitigation Enforced                                                                                                                                |
 | :------------------------------------------------ | :------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Agent hallucinating destructive shell command** | Loss of local files or workspace corruption | External worktree isolation (`~/.codex-anti-orchestrator/worktrees/`) + prohibition of permission bypass flags (`--dangerously-skip-permissions`). |
+| **Target repository path traversal**              | Unauthorized repository modification        | Strict confinement to `/Users/lisong/code` + realpath canonical validation.                                                                        |
+| **Git lock race condition / corruption**          | Corrupted git index or repository loss      | Fast-fail lock detection with explicit prohibition of automatic lockfile deletion.                                                                 |
 | **Accidental secret leak**                        | Exposed API tokens or GitHub credentials    | Strict `.gitignore`, secret scrubbing in logs, and no token persistence in codebase.                                                               |
 | **Unintended code merge to production**           | Defective code shipped to users             | Hard block on automatic merge commands; mandatory human PR approval gate.                                                                          |
 | **Review tool mutating code during analysis**     | Unaudited and unverified modifications      | Codex CLI runs strictly in read-only inspection mode.                                                                                              |
-| **Cross-repository or in-repo pollution**         | Residual files or corrupted workspace       | Worktrees strictly located in dedicated external orchestrator state directory.                                                                     |
+| **Cross-repository or in-repo pollution**         | Residual files or corrupted workspace       | Worktrees strictly located in dedicated external orchestrator state directory with path isolation validation.                                      |

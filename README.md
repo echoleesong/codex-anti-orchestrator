@@ -17,8 +17,8 @@ flowchart TD
     end
 
     subgraph External Execution & Development
-        B -->|2. Prepare external worktree in state dir| C[External Worktree]
-        B -->|3. Run development task| D[Antigravity CLI: agy]
+        B -->|2. Prepare external worktree in state dir| C[External Worktree Ready]
+        C -->|3. Run development task| D[Antigravity CLI: agy]
         D -->|4. Generate changes & tests| C
     end
 
