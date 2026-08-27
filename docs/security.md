@@ -68,7 +68,7 @@ This document defines the security boundaries, operational constraints, and safe
 
 ### 2.8 Codex CLI Read-Only Review & Fail-Safe Parsing
 
-- **Review-Only Mode**: During the review phase, OpenAI Codex CLI (`codex`) is invoked strictly with read-only flags (`review --read-only --format json`).
+- **Review-Only Mode**: During the review phase, OpenAI Codex CLI (`codex`) is invoked strictly with read-only flags (`codex exec --sandbox read-only`).
 - **No Code Mutation**: Codex must inspect git diffs, ASTs, and PR metadata to produce structured comments and suggestions, but is strictly disallowed from writing files or making commits directly.
 - **Fail-Safe Verdict Parsing**:
   - Valid verdicts: `APPROVE`, `CHANGES_REQUIRED`, `NEEDS_USER_DECISION`.

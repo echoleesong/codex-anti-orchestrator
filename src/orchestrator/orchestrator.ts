@@ -27,6 +27,7 @@ import {
 import type {
   CommandExecutor,
   CreateTaskOptions,
+  IOrchestrator,
   ResumeTaskOptions,
   TaskRecord,
   TaskState,
@@ -42,7 +43,7 @@ export interface RunLoopOptions {
   ) => Promise<{ pass: boolean; errors?: string }>;
 }
 
-export class Orchestrator {
+export class Orchestrator implements IOrchestrator {
   private stateDir: string;
   private allowedBaseDir: string;
   private defaultExecutor: CommandExecutor;

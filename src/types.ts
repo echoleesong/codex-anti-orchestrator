@@ -232,3 +232,39 @@ export interface RunTaskLoopOptions {
   executor?: CommandExecutor;
   autoApprove?: boolean;
 }
+
+// ----------------------------------------------------------------------
+// Phase 4: MCP Server Types
+// ----------------------------------------------------------------------
+
+export interface IOrchestrator {
+  createTask(options: CreateTaskOptions): Promise<TaskRecord>;
+  runTaskLoop(
+    taskId: string,
+    loopOptions?: {
+      executor?: CommandExecutor;
+      maxReviewCycles?: number;
+      testRunner?: (
+        worktreePath: string,
+        executor: CommandExecutor
+      ) => Promise<{ pass: boolean; errors?: string }>;
+    }
+  ): Promise<TaskRecord>;
+  getTask(taskId: string): Promise<TaskRecord>;
+  listTasks(): Promise<TaskRecord[]>;
+  cancelTask(taskId: string, reason?: string): Promise<TaskRecord>;
+  resumeTask(taskId: string, options?: ResumeTaskOptions): Promise<TaskRecord>;
+  getStateDir?(): string;
+  getAllowedBaseDir?(): string;
+}
+
+export interface OrchestratorMcpServerOptions {
+  orchestrator?: IOrchestrator;
+  stateDir?: string;
+  allowedBaseDir?: string;
+  executor?: CommandExecutor;
+  serverInfo?: {
+    name?: string;
+    version?: string;
+  };
+}
