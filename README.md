@@ -138,6 +138,52 @@ npm run format
 npm run build
 ```
 
+### Codex Desktop MCP Configuration (stdio)
+
+The orchestrator provides a Model Context Protocol (MCP) server running over standard I/O (`stdio`), allowing Codex Desktop to dispatch and manage orchestrated tasks safely.
+
+#### 1. Build Prerequisite
+
+Before running the MCP server, compile the TypeScript source to `dist/`:
+
+```bash
+npm run build
+```
+
+#### 2. Exact Configuration Pattern
+
+Add `codex-anti-orchestrator` to your Codex Desktop MCP configuration (e.g. `~/.codex/config.json` or application MCP settings) using the absolute path to `bin/mcp.js`:
+
+```json
+{
+  "mcpServers": {
+    "codex-anti-orchestrator": {
+      "command": "node",
+      "args": ["/Users/lisong/code/codex-anti-orchestrator/bin/mcp.js"]
+    }
+  }
+}
+```
+
+_(Note: Replace `/Users/lisong/code/codex-anti-orchestrator` with the absolute path to your local repository directory)._
+
+#### 3. Available MCP Tools
+
+The MCP server exposes strictly the following six authorized orchestration tools:
+
+1. `orchestrator_create_task`: Validates target repository cleanliness and lockfile safety, and allocates an isolated external Git worktree for the task.
+2. `orchestrator_run_task`: Executes the automated development, GitHub PR creation, and Codex review state loop for a task.
+3. `orchestrator_get_task_status`: Retrieves current lifecycle state, transition history, and diagnostics for a specific task.
+4. `orchestrator_list_tasks`: Lists all development tasks tracked in the orchestrator state directory.
+5. `orchestrator_resume_task`: Resumes a task from `NEEDS_USER_DECISION` or `FAILED` state, supporting user guidance or risk overrides.
+6. `orchestrator_cancel_task`: Cancels an active or pending task (`ABORTED`) while safely preserving the external worktree for inspection.
+
+#### 4. Safety & Tool Boundary Guarantees
+
+- **No Merge Tools**: Merge and auto-merge tools (`gh pr merge`, auto-approval, fast-forwarding) do not exist. Merging PRs remains strictly a human-supervised action.
+- **No Deployment Tools**: Deployment, release creation, publishing, and workflow dispatch tools do not exist.
+- **No Arbitrary Shell Execution Tools**: Arbitrary bash, command execution, or terminal evaluation tools do not exist. External tools operate strictly within their constrained adapters.
+
 ---
 
 ## 6. Phase 3 Safety & Control Guarantees

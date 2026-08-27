@@ -6,7 +6,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "orchestrator": "./bin/orchestrator.js"
+    "orchestrator": "./bin/orchestrator.js",
+    "orchestrator-mcp": "./bin/mcp.js"
   },
   "scripts": {
     "build": "tsc",
@@ -36,5 +37,8 @@
     "tsx": "^4.19.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.6"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
   }
 }

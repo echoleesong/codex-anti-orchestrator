@@ -8,3 +8,4 @@ export * from './adapters/agy-adapter.js';
 export * from './adapters/codex-adapter.js';
 export * from './adapters/github-pr-adapter.js';
 export * from './orchestrator/orchestrator.js';
+export * from './mcp/index.js';
