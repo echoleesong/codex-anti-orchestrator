@@ -17,7 +17,7 @@
     "lint": "tsc --noEmit",
     "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"docs/**/*.md\" \"README.md\"",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\" \"docs/**/*.md\" \"README.md\"",
-    "doctor": "node --loader ts-node/esm src/cli.ts doctor || tsx src/cli.ts doctor || node dist/cli.js doctor",
+    "doctor": "tsx src/cli.ts doctor",
     "start": "tsx src/cli.ts"
   },
   "keywords": [

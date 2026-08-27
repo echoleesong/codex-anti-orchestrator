@@ -1,6 +1,31 @@
 import type { CheckResult, CommandExecutor, DoctorOptions, DoctorReport } from '../types.js';
 import { defaultExecutor } from '../utils/exec.js';
 
+export function isValidGitHubRemoteUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+
+  // Patterns for GitHub remotes:
+  // 1. https://github.com/owner/repo or http://
+  // 2. git@github.com:owner/repo
+  // 3. ssh://git@github.com/owner/repo or ssh://git@github.com:port/owner/repo
+  // 4. git://github.com/owner/repo
+  const httpsOrHttpPattern =
+    /^https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?(?:\.git)?\/?$/;
+  const sshScpPattern = /^git@github\.com:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?(?:\.git)?\/?$/;
+  const sshUrlPattern =
+    /^ssh:\/\/git@github\.com(?::\d+)?\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?(?:\.git)?\/?$/;
+  const gitUrlPattern = /^git:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?(?:\.git)?\/?$/;
+
+  return (
+    httpsOrHttpPattern.test(trimmed) ||
+    sshScpPattern.test(trimmed) ||
+    sshUrlPattern.test(trimmed) ||
+    gitUrlPattern.test(trimmed)
+  );
+}
+
 export async function checkNode(): Promise<CheckResult> {
   const version = process.version;
   const major = parseInt(version.replace(/^v/, '').split('.')[0], 10);
@@ -58,7 +83,32 @@ export async function checkGit(
   const branch = branchRes.stdout.trim() || 'unknown';
 
   const remoteRes = await executor('git', ['remote', 'get-url', 'origin'], { cwd });
-  const remote = remoteRes.exitCode === 0 ? remoteRes.stdout.trim() : 'none';
+  if (remoteRes.exitCode !== 0) {
+    return {
+      id: 'git',
+      name: 'Git Repository Status',
+      status: 'error',
+      version: gitVersion,
+      message: 'Git remote "origin" is missing or cannot be read.',
+      details: `Branch: ${branch}\nRemote: none\nError: ${remoteRes.stderr.trim() || 'origin remote not configured'}`,
+      fixSuggestion:
+        'Add a valid GitHub remote origin with "git remote add origin https://github.com/<owner>/<repo>.git".',
+    };
+  }
+
+  const remote = remoteRes.stdout.trim();
+  if (!isValidGitHubRemoteUrl(remote)) {
+    return {
+      id: 'git',
+      name: 'Git Repository Status',
+      status: 'error',
+      version: gitVersion,
+      message: `Git remote origin ("${remote}") is not a valid GitHub repository URL.`,
+      details: `Branch: ${branch}\nRemote: ${remote}`,
+      fixSuggestion:
+        'Update remote origin to point to a valid GitHub repository (e.g. "git remote set-url origin https://github.com/<owner>/<repo>.git").',
+    };
+  }
 
   return {
     id: 'git',

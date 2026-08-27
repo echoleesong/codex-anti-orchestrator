@@ -2,18 +2,20 @@
 import { formatDoctorReport, runDoctor } from './doctor/doctor.js';
 
 async function main() {
-  const args = process.argv.slice(2);
-  const command = args[0] || 'help';
+  const rawArgs = process.argv.slice(2);
+  const isJson = rawArgs.includes('--json') || rawArgs.includes('-j');
+  const nonFlagArgs = rawArgs.filter((arg) => !arg.startsWith('-'));
+  const command =
+    nonFlagArgs[0] || (rawArgs.some((a) => a === '-v' || a === '--version') ? 'version' : 'help');
 
   switch (command) {
     case 'doctor': {
-      const isJson = args.includes('--json');
       const report = await runDoctor();
 
       if (isJson) {
-        console.log(JSON.stringify(report, null, 2));
+        process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
       } else {
-        console.log(formatDoctorReport(report));
+        process.stdout.write(`${formatDoctorReport(report)}\n`);
       }
 
       if (report.hasErrors) {
@@ -23,20 +25,15 @@ async function main() {
       break;
     }
 
-    case '--version':
-    case '-v':
     case 'version': {
-      console.log('codex-anti-orchestrator v0.1.0');
+      process.stdout.write('codex-anti-orchestrator v0.1.0\n');
       process.exit(0);
       break;
     }
 
     case 'help':
-    case '--help':
-    case '-h':
     default: {
-      console.log(
-        `
+      const helpText = `
 codex-anti-orchestrator - Local Orchestrator for Codex Review & Antigravity Development
 
 USAGE:
@@ -48,15 +45,17 @@ COMMANDS:
   help, --help        Show this help message
 
 OPTIONS for 'doctor':
-  --json              Output diagnostics as JSON
-      `.trim()
-      );
-      process.exit(command === 'help' || command === '--help' || command === '-h' ? 0 : 1);
+  --json, -j          Output diagnostics as clean JSON
+      `.trim();
+      process.stdout.write(`${helpText}\n`);
+      process.exit(command === 'help' ? 0 : 1);
     }
   }
 }
 
 main().catch((err) => {
-  console.error('Fatal orchestrator error:', err);
+  process.stderr.write(
+    `Fatal orchestrator error: ${err instanceof Error ? err.message : String(err)}\n`
+  );
   process.exit(1);
 });
