@@ -1,0 +1,40 @@
+{
+  "name": "codex-anti-orchestrator",
+  "version": "0.1.0",
+  "description": "Local orchestrator for Codex review, Antigravity development, and GitHub PR handoff",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "orchestrator": "./bin/orchestrator.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "tsc --noEmit",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"docs/**/*.md\" \"README.md\"",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\" \"docs/**/*.md\" \"README.md\"",
+    "doctor": "node --loader ts-node/esm src/cli.ts doctor || tsx src/cli.ts doctor || node dist/cli.js doctor",
+    "start": "tsx src/cli.ts"
+  },
+  "keywords": [
+    "orchestrator",
+    "codex",
+    "antigravity",
+    "github",
+    "pr",
+    "workflow"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "prettier": "^3.5.2",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.6"
+  }
+}
