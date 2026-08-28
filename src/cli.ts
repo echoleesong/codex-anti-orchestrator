@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { formatDoctorReport, runDoctor } from './doctor/doctor.js';
 import { Orchestrator } from './orchestrator/orchestrator.js';
+import { startMonitorServer } from './monitor/server.js';
 import type { TaskRecord } from './types.js';
 
 function parseArgValue(args: string[], flag: string, shortFlag?: string): string | undefined {
@@ -235,6 +236,40 @@ async function main() {
       break;
     }
 
+    case 'monitor': {
+      const rawPort = parseArgValue(rawArgs, '--port');
+      const port = rawPort ? Number.parseInt(rawPort, 10) : 4390;
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        process.stderr.write('Error: --port must be an integer between 1 and 65535.\n');
+        process.exit(1);
+      }
+      try {
+        const monitor = await startMonitorServer({
+          stateDir: orchestrator.getStateDir(),
+          port,
+        });
+        const url = `http://${monitor.host}:${monitor.port}`;
+        if (isJson) {
+          process.stdout.write(
+            `${JSON.stringify({ ok: true, url, host: monitor.host, port: monitor.port })}\n`
+          );
+        } else {
+          process.stdout.write(`Local monitor listening at ${url}\nPress Ctrl+C to stop.\n`);
+        }
+        const stop = () => {
+          void monitor.close().finally(() => process.exit(0));
+        };
+        process.once('SIGINT', stop);
+        process.once('SIGTERM', stop);
+      } catch (err) {
+        process.stderr.write(
+          `Failed to start monitor: ${err instanceof Error ? err.message : String(err)}\n`
+        );
+        process.exit(1);
+      }
+      break;
+    }
+
     case 'version': {
       process.stdout.write('codex-anti-orchestrator v0.1.0\n');
       process.exit(0);
@@ -253,6 +288,7 @@ COMMANDS:
   doctor                               Run read-only prerequisite and environment diagnostics
   create --repo <path> --prompt <p>    Initialize task, validate cleanliness, create external worktree
   run <taskId>                         Execute the development, PR, and review state loop
+  monitor [--port <port>]              Serve the local read-only task monitor on localhost
   status [<taskId>] [--all]            Inspect status of a specific task or list all tasks
   cancel <taskId> [--reason <r>]       Cancel active task while preserving worktree
   resume <taskId> [--override]         Resume task from decision or failure state

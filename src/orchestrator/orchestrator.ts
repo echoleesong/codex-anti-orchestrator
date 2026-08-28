@@ -26,13 +26,16 @@ import {
 } from '../state/state-machine.js';
 import type {
   CommandExecutor,
+  CIWaitObservation,
+  CIWaitOptions,
   CreateTaskOptions,
   IOrchestrator,
   ResumeTaskOptions,
   TaskRecord,
+  TaskEventSource,
   TaskState,
 } from '../types.js';
-import { defaultExecutor } from '../utils/exec.js';
+import { defaultExecutor, redactSecrets } from '../utils/exec.js';
 
 export interface RunLoopOptions {
   executor?: CommandExecutor;
@@ -41,7 +44,13 @@ export interface RunLoopOptions {
     worktreePath: string,
     executor: CommandExecutor
   ) => Promise<{ pass: boolean; errors?: string }>;
+  ciWait?: CIWaitOptions;
 }
+
+const MAX_TASK_EVENTS = 100;
+const MAX_CI_WAIT_HISTORY = 20;
+const DEFAULT_CI_WAIT_ATTEMPTS = 12;
+const DEFAULT_CI_POLL_INTERVAL_MS = 10_000;
 
 export class Orchestrator implements IOrchestrator {
   private stateDir: string;
@@ -73,6 +82,105 @@ export class Orchestrator implements IOrchestrator {
 
   getAllowedBaseDir(): string {
     return this.allowedBaseDir;
+  }
+
+  private recordEvent(
+    task: TaskRecord,
+    source: TaskEventSource,
+    message: string,
+    detail?: string
+  ): void {
+    const event = {
+      timestamp: new Date().toISOString(),
+      source,
+      message: redactSecrets(message).slice(0, 500),
+      detail: detail ? redactSecrets(detail).slice(0, 2_000) : undefined,
+    };
+    task.events = [...(task.events || []), event].slice(-MAX_TASK_EVENTS);
+  }
+
+  private async waitForCI(
+    task: TaskRecord,
+    pr: GitHubPRAdapter,
+    prTarget: string,
+    executor: CommandExecutor,
+    options: CIWaitOptions = {}
+  ): Promise<{
+    passing: boolean;
+    checks: import('../types.js').PRChecksResult;
+    terminalReason?: string;
+  }> {
+    const maxAttempts = options.maxAttempts ?? DEFAULT_CI_WAIT_ATTEMPTS;
+    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_CI_POLL_INTERVAL_MS;
+    const sleep =
+      options.sleep ||
+      ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const checks = await pr.getPRChecks(task.worktreePath, prTarget, executor);
+      const isPendingCheck = (check: { bucket: string; state: string }) =>
+        /pending|queued|waiting|in_progress|in progress|requested/.test(
+          `${check.bucket} ${check.state}`.toLowerCase()
+        );
+      const isPassingCheck = (check: { bucket: string; state: string }) =>
+        check.bucket.toLowerCase() === 'pass' &&
+        ['success', 'neutral', 'pass', 'completed'].includes(check.state.toLowerCase());
+      const pending =
+        checks.success &&
+        checks.checks.length > 0 &&
+        checks.checks.some(isPendingCheck) &&
+        checks.checks.every((check) => isPendingCheck(check) || isPassingCheck(check));
+      const status: CIWaitObservation['status'] = checks.allPassing
+        ? 'PASSING'
+        : pending
+          ? 'PENDING'
+          : checks.success
+            ? 'FAILING'
+            : 'UNAVAILABLE';
+      const summary =
+        checks.error || checks.checks.map((check) => `${check.name}: ${check.state}`).join(', ');
+      const observation: CIWaitObservation = {
+        timestamp: new Date().toISOString(),
+        attempt,
+        status,
+        summary: summary.slice(0, 2_000),
+        checks: checks.checks,
+      };
+      task.diagnostics.ciWaitAttempts = attempt;
+      task.diagnostics.ciWaitHistory = [
+        ...(task.diagnostics.ciWaitHistory || []),
+        observation,
+      ].slice(-MAX_CI_WAIT_HISTORY);
+      this.recordEvent(
+        task,
+        'GITHUB_CI',
+        `CI observation ${attempt}/${maxAttempts}: ${status}`,
+        observation.summary
+      );
+      await saveTaskState(this.stateDir, task);
+
+      if (checks.allPassing) {
+        return { passing: true, checks };
+      }
+      if (!pending) {
+        return {
+          passing: false,
+          checks,
+          terminalReason:
+            checks.error || 'GitHub PR CI checks failed or completed without a passing result.',
+        };
+      }
+      if (attempt < maxAttempts) {
+        await sleep(pollIntervalMs);
+      }
+    }
+
+    const last = task.diagnostics.ciWaitHistory?.at(-1);
+    return {
+      passing: false,
+      checks: { success: true, allPassing: false, checks: last?.checks || [] },
+      terminalReason: `GitHub PR CI remained pending after ${maxAttempts} bounded polling attempts.`,
+    };
   }
 
   /**
@@ -143,6 +251,7 @@ export class Orchestrator implements IOrchestrator {
       updatedAt: now,
       prompt: options.prompt,
       transitions: [],
+      events: [],
       diagnostics: {
         reviewCycles: 0,
         maxReviewCycles,
@@ -150,6 +259,12 @@ export class Orchestrator implements IOrchestrator {
         worktreePreserved: true,
       },
     };
+
+    this.recordEvent(
+      task,
+      'ORCHESTRATOR',
+      'Task accepted and isolated worktree allocation started.'
+    );
 
     // Transition IDLE -> INITIALIZING
     transitionTaskState(task, 'INITIALIZING', {
@@ -324,6 +439,8 @@ export class Orchestrator implements IOrchestrator {
               reason: 'Invoking agy for autonomous code generation and tests.',
             });
             await saveTaskState(this.stateDir, task);
+            this.recordEvent(task, 'ANTI', 'Development request dispatched to Antigravity.');
+            await saveTaskState(this.stateDir, task);
 
             // 2. Invoke agy in isolated external worktree with --sandbox
             const agyRes = await agy.runDevelopment(task.worktreePath, task.prompt, {
@@ -341,12 +458,31 @@ export class Orchestrator implements IOrchestrator {
               return task;
             }
 
+            this.recordEvent(
+              task,
+              'ANTI',
+              'Antigravity development invocation completed.',
+              agyRes.stdout
+            );
+
             // 3. Commit changes & push branch
-            await this.commitWorktreeChanges(
+            const committed = await this.commitWorktreeChanges(
               task.worktreePath,
               `feat: ${task.prompt.slice(0, 50).trim()}`,
               executor
             );
+            if (!committed) {
+              transitionTaskState(task, 'FAILED', {
+                reason: 'Antigravity completed without producing staged worktree changes.',
+              });
+              this.recordEvent(
+                task,
+                'ORCHESTRATOR',
+                'No changes were committed; PR creation halted.'
+              );
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
 
             const pushRes = await pr.pushTaskBranch(task.worktreePath, task.taskBranch, executor);
             if (!pushRes.success) {
@@ -387,6 +523,7 @@ export class Orchestrator implements IOrchestrator {
               prUrl: prRes.prUrl,
               prNumber: prRes.prNumber,
             };
+            this.recordEvent(task, 'ORCHESTRATOR', 'Pull request created.', prRes.prUrl);
 
             // Transition PR_CREATING -> CODEX_REVIEWING
             transitionTaskState(task, 'CODEX_REVIEWING', {
@@ -406,6 +543,12 @@ export class Orchestrator implements IOrchestrator {
             });
 
             task.diagnostics.lastReviewVerdict = reviewResult.verdict;
+            this.recordEvent(
+              task,
+              'CODEX',
+              `Codex review completed with verdict: ${reviewResult.verdict}.`,
+              reviewResult.summary
+            );
 
             // Transition CODEX_REVIEWING -> REVIEW_EVALUATING
             transitionTaskState(task, 'REVIEW_EVALUATING', {
@@ -428,11 +571,8 @@ export class Orchestrator implements IOrchestrator {
             const prTarget = task.metadata?.prNumber
               ? String(task.metadata.prNumber)
               : task.taskBranch;
-            const prChecks = await pr.getPRChecks(task.worktreePath, prTarget, executor);
-
             const reviewClean =
               reviewResult.verdict === 'APPROVE' && reviewResult.blockingIssues.length === 0;
-            const ciPassing = prChecks.success && prChecks.allPassing;
 
             // 3. Evaluation logic in REVIEW_EVALUATING:
 
@@ -445,12 +585,15 @@ export class Orchestrator implements IOrchestrator {
               return task;
             }
 
-            // Fail-closed stop if PR CI checks are pending, failing, empty, or error (never auto-fix merely pending CI)
+            const ciWait = await this.waitForCI(task, pr, prTarget, executor, loopOptions.ciWait);
+            const ciPassing = ciWait.passing;
+
+            // Fail-closed stop if PR CI checks fail, cannot be read, or remain pending beyond bounded polling.
             if (!ciPassing) {
               transitionTaskState(task, 'NEEDS_USER_DECISION', {
-                reason: prChecks.error
-                  ? `GitHub PR CI checks failed or unavailable: ${prChecks.error}`
-                  : 'GitHub PR CI checks are pending, incomplete, or failed. Halting for user decision.',
+                reason: ciWait.checks.error
+                  ? `GitHub PR CI checks failed or unavailable: ${ciWait.terminalReason || ciWait.checks.error}`
+                  : `GitHub PR CI checks require user decision: ${ciWait.terminalReason || 'unknown CI state'}`,
               });
               await saveTaskState(this.stateDir, task);
               return task;
@@ -464,7 +607,7 @@ export class Orchestrator implements IOrchestrator {
                 reviewClean: true,
                 testsPass: true,
                 ciPassing: true,
-                ciProof: prChecks,
+                ciProof: ciWait.checks,
               });
               await saveTaskState(this.stateDir, task);
               return task;
@@ -641,7 +784,13 @@ export class Orchestrator implements IOrchestrator {
     }
 
     if (task.state === 'FAILED') {
-      const targetState = task.diagnostics.resumeTargetState || 'WORKTREE_READY';
+      const failedState = task.diagnostics.resumeTargetState;
+      const targetState =
+        failedState === 'AGY_FIXING' || failedState === 'PR_UPDATING'
+          ? 'AGY_FIXING'
+          : failedState === 'CODEX_REVIEWING' || failedState === 'REVIEW_EVALUATING'
+            ? 'CODEX_REVIEWING'
+            : 'WORKTREE_READY';
       transitionTaskState(task, targetState, {
         reason: `Resuming task from previous failure in ${task.diagnostics.failedState || 'unknown state'}`,
       });

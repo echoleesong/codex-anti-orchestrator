@@ -31,7 +31,7 @@ stateDiagram-v2
     CODEX_REVIEWING --> REVIEW_EVALUATING: Review Completed
     CODEX_REVIEWING --> FAILED: Review Execution Timeout
 
-    REVIEW_EVALUATING --> AWAITING_HUMAN_APPROVAL: Tests Pass & Codex Review Clean (Strictly Both True)
+    REVIEW_EVALUATING --> AWAITING_HUMAN_APPROVAL: Tests Pass, CI Passes & Codex Review Clean
     REVIEW_EVALUATING --> AGY_FIXING: Issues Found & Cycles < Max
     REVIEW_EVALUATING --> NEEDS_USER_DECISION: Issues Found & Cycles == Max
 
@@ -69,7 +69,7 @@ stateDiagram-v2
 | `AGY_DEVELOPING`          | Invoking `agy` to generate code, unit tests, and documentation.                                                          | Sandboxed noninteractive execution (`--mode accept-edits --print --sandbox`) within the isolated external worktree; no `--dangerously-skip-permissions` allowed.                                                                                                                                                |
 | `PR_CREATING`             | Pushing task branch to GitHub remote and opening draft/review PR via `gh`.                                               | Commit messages adhere to conventional commits; PR contains test summary.                                                                                                                                                                                                                                       |
 | `CODEX_REVIEWING`         | Invoking `codex` in read-only mode against PR diff.                                                                      | Strictly read-only inspection; generates structured review findings without file mutations.                                                                                                                                                                                                                     |
-| `REVIEW_EVALUATING`       | Evaluating review findings and test suite results.                                                                       | Checks whether blocking issues exist; increments iteration counter `review_cycles`.                                                                                                                                                                                                                             |
+| `REVIEW_EVALUATING`       | Evaluating review findings, local tests, and GitHub CI.                                                                  | Pending CI is polled with a bounded interval and attempt count. Each observation is persisted before the next wait. CI failures, unavailable checks, or exhausted pending waits fail closed to `NEEDS_USER_DECISION`.                                                                                           |
 | `AGY_FIXING`              | Passing review feedback to `agy` to apply corrective changes.                                                            | Scoped strictly to feedback items; sandboxed noninteractive execution (`--mode accept-edits --print --sandbox`); runs test suite to verify fixes within external worktree.                                                                                                                                      |
 | `PR_UPDATING`             | Pushing corrective commits to remote PR branch.                                                                          | Incremental commits pushed cleanly to the PR branch.                                                                                                                                                                                                                                                            |
 | `AWAITING_HUMAN_APPROVAL` | PR is 100% clean and green (all automated tests pass, PR CI checks pass, and Codex review has **no blocking issues**).   | **Strict invariant**: Only reachable directly from `REVIEW_EVALUATING` on clean pass (`reviewClean === true`, `testsPass === true`, `ciPassing === true`, and structured `ciProof` with `allPassing === true`). Automated execution halts; worktree is preserved in state directory; awaits human manual merge. |
@@ -96,6 +96,10 @@ To prevent infinite loops between `CODEX_REVIEWING` and `AGY_FIXING` and guarant
 - **Fail-Safe Fallback in Review Parsing**:
   - If Codex CLI output is missing, blank, malformed, non-JSON, or produces an unparseable verdict, the parser fails safe to `NEEDS_USER_DECISION`.
   - When `NEEDS_USER_DECISION` is entered, automated fixing halts immediately, diagnostics are saved, and the isolated worktree is preserved for operator inspection.
+- **Bounded GitHub CI Waiting**:
+  - Pending CI is not treated as an immediate user decision. The loop performs at most 12 observations at a 10-second interval by default.
+  - Every observation records timestamp, attempt, normalized state, summary, and bounded check details in `diagnostics.ciWaitHistory`.
+  - A passing result may proceed to clean approval. A failing, malformed, unavailable, or still-pending result after the bound enters `NEEDS_USER_DECISION`; no CI action is retried indefinitely.
 - **Handling Unresolved Cycles (`NEEDS_USER_DECISION` & `AWAITING_HUMAN_OVERRIDE`)**:
   - If blocking issues or failing tests remain after `MAX_REVIEW_CYCLES` attempts, the state machine enters **`NEEDS_USER_DECISION`**.
   - If the human operator decides to accept the PR with known, documented warnings, it transitions to **`AWAITING_HUMAN_OVERRIDE`** (not `AWAITING_HUMAN_APPROVAL`).

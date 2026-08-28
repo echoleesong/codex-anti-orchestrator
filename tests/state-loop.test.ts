@@ -32,16 +32,20 @@ describe('Controlled State-Loop Execution & Transitions', () => {
         | 'pending'
         | 'failing'
         | 'cancelled'
+        | 'mixed_pending'
         | 'error'
         | 'malformed'
         | 'empty'
         | 'empty_array';
+      prChecksSequence?: Array<'success' | 'pending' | 'failing' | 'error'>;
       agyFail?: boolean;
       pushFail?: boolean;
+      worktreeChanges?: boolean;
     } = {}
   ): CommandExecutor => {
     let codexCallCount = 0;
     let testCallCount = 0;
+    let prChecksCallCount = 0;
 
     return async (
       file: string,
@@ -63,7 +67,11 @@ describe('Controlled State-Loop Execution & Transitions', () => {
       }
       if (full.includes('status --porcelain')) {
         if (cwd.includes('worktrees')) {
-          return { exitCode: 0, stdout: 'M  src/feature.ts\n', stderr: '' };
+          return {
+            exitCode: 0,
+            stdout: options.worktreeChanges === false ? '' : 'M  src/feature.ts\n',
+            stderr: '',
+          };
         }
         return { exitCode: 0, stdout: '', stderr: '' };
       }
@@ -104,7 +112,13 @@ describe('Controlled State-Loop Execution & Transitions', () => {
           };
         }
         if (args.includes('checks')) {
-          const prStatus = options.prChecksStatus ?? 'success';
+          const prStatus =
+            options.prChecksSequence?.[
+              Math.min(prChecksCallCount, options.prChecksSequence.length - 1)
+            ] ??
+            options.prChecksStatus ??
+            'success';
+          prChecksCallCount += 1;
           if (prStatus === 'success') {
             return {
               exitCode: 0,
@@ -120,6 +134,16 @@ describe('Controlled State-Loop Execution & Transitions', () => {
               exitCode: 0,
               stdout: JSON.stringify([
                 { name: 'ci/build', state: 'IN_PROGRESS', bucket: 'pending' },
+              ]),
+              stderr: '',
+            };
+          }
+          if (prStatus === 'mixed_pending') {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify([
+                { name: 'ci/build', state: 'SUCCESS', bucket: 'pass' },
+                { name: 'ci/test', state: 'IN_PROGRESS', bucket: 'pending' },
               ]),
               stderr: '',
             };
@@ -258,7 +282,10 @@ describe('Controlled State-Loop Execution & Transitions', () => {
 
     expect(task.state).toBe('WORKTREE_READY');
 
-    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+    const finishedTask = await orchestrator.runTaskLoop(task.id, {
+      executor: mock,
+      ciWait: { maxAttempts: 2, pollIntervalMs: 0 },
+    });
 
     expect(finishedTask.state).toBe('AWAITING_HUMAN_APPROVAL');
     expect(finishedTask.diagnostics.worktreePreserved).toBe(true);
@@ -290,7 +317,10 @@ describe('Controlled State-Loop Execution & Transitions', () => {
       prompt: 'Implement feature needing 1 fix cycle',
     });
 
-    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+    const finishedTask = await orchestrator.runTaskLoop(task.id, {
+      executor: mock,
+      ciWait: { maxAttempts: 2, pollIntervalMs: 0 },
+    });
 
     expect(finishedTask.state).toBe('AWAITING_HUMAN_APPROVAL');
     expect(finishedTask.diagnostics.reviewCycles).toBe(1);
@@ -354,6 +384,20 @@ describe('Controlled State-Loop Execution & Transitions', () => {
     expect(finishedTask.diagnostics.worktreePreserved).toBe(true);
   });
 
+  it('fails before PR creation when Antigravity produces no worktree changes', async () => {
+    const mock = createMockExecutor({ worktreeChanges: false });
+    const orchestrator = new Orchestrator({ stateDir, allowedBaseDir: tempDir, executor: mock });
+    const task = await orchestrator.createTask({ repoPath, prompt: 'No-op development task' });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('FAILED');
+    expect(finishedTask.diagnostics.lastError).toBeUndefined();
+    expect(finishedTask.transitions.at(-1)?.reason).toContain(
+      'without producing staged worktree changes'
+    );
+  });
+
   it('should transition to NEEDS_USER_DECISION when PR checks are pending', async () => {
     const mock = createMockExecutor({
       codexVerdicts: ['APPROVE'],
@@ -372,14 +416,60 @@ describe('Controlled State-Loop Execution & Transitions', () => {
       prompt: 'Task with pending CI checks',
     });
 
-    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+    const finishedTask = await orchestrator.runTaskLoop(task.id, {
+      executor: mock,
+      ciWait: { maxAttempts: 2, pollIntervalMs: 0 },
+    });
 
     expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
     expect(finishedTask.diagnostics.worktreePreserved).toBe(true);
     const lastTransition = finishedTask.transitions[finishedTask.transitions.length - 1];
-    expect(lastTransition.reason).toContain(
-      'GitHub PR CI checks are pending, incomplete, or failed'
-    );
+    expect(lastTransition.reason).toContain('remained pending after 2 bounded polling attempts');
+  });
+
+  it('waits through pending CI and continues automatically when checks become passing', async () => {
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE'],
+      testsPass: [true],
+      prChecksSequence: ['pending', 'success'],
+    });
+    const orchestrator = new Orchestrator({ stateDir, allowedBaseDir: tempDir, executor: mock });
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Task with eventually passing CI',
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, {
+      executor: mock,
+      ciWait: { maxAttempts: 3, pollIntervalMs: 0 },
+    });
+
+    expect(finishedTask.state).toBe('AWAITING_HUMAN_APPROVAL');
+    expect(finishedTask.diagnostics.ciWaitAttempts).toBe(2);
+    expect(finishedTask.diagnostics.ciWaitHistory?.map((entry) => entry.status)).toEqual([
+      'PENDING',
+      'PASSING',
+    ]);
+  });
+
+  it('treats a mixed passing and pending CI set as pending rather than failing early', async () => {
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE'],
+      testsPass: [true],
+      prChecksStatus: 'mixed_pending',
+    });
+    const orchestrator = new Orchestrator({ stateDir, allowedBaseDir: tempDir, executor: mock });
+    const task = await orchestrator.createTask({ repoPath, prompt: 'Task with mixed CI states' });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, {
+      executor: mock,
+      ciWait: { maxAttempts: 2, pollIntervalMs: 0 },
+    });
+
+    expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
+    expect(
+      finishedTask.diagnostics.ciWaitHistory?.every((entry) => entry.status === 'PENDING')
+    ).toBe(true);
   });
 
   it('should transition to NEEDS_USER_DECISION when PR checks are failing', async () => {
