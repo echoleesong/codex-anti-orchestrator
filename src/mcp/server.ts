@@ -99,7 +99,7 @@ export function formatErrorResponse(error: unknown) {
 
 /**
  * Creates and configures the Orchestrator MCP server instance.
- * Exposes strictly the 6 authorized orchestration tools.
+ * Exposes a narrow set of authorized orchestration tools.
  * Safe input schemas, structured error mapping, and dependency injection supported.
  */
 export function createOrchestratorMcpServer(options: OrchestratorMcpServerOptions = {}): McpServer {
@@ -136,6 +136,37 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
       return formatErrorResponse(error);
     }
   };
+
+  // 0. orchestrator_configure_allowed_base (human confirmation required)
+  server.registerTool(
+    'orchestrator_configure_allowed_base',
+    {
+      description:
+        'Persists the local directory tree within which task repositories may be accessed. Call only after the user explicitly confirms the exact directory. This is required before first task creation on a new machine.',
+      inputSchema: z
+        .object({
+          allowedBaseDir: z
+            .string()
+            .min(1, 'allowedBaseDir must not be empty')
+            .describe(
+              'Absolute directory explicitly confirmed by the user as the allowed repository root'
+            ),
+          confirmed: z
+            .literal(true)
+            .describe('Must be true only after the user explicitly confirmed this exact directory'),
+        })
+        .strict(),
+    },
+    async (args) =>
+      runWithMonitor(async () => {
+        if (!orchestrator.configureAllowedBaseDir) {
+          throw new Error(
+            'Allowed base configuration is unavailable for this orchestrator instance.'
+          );
+        }
+        return orchestrator.configureAllowedBaseDir(args.allowedBaseDir);
+      })
+  );
 
   // 1. orchestrator_create_task (repoPath, prompt, optional baseBranch)
   server.registerTool(

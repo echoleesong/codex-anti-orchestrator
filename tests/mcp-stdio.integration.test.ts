@@ -42,7 +42,7 @@ describe('MCP Stdio Client & Real Child Process Integration', () => {
     }
   });
 
-  it('should launch bin/mcp.js over StdioClientTransport, initialize, list exactly 6 tools, and never trigger agy/codex/gh', async () => {
+  it('should launch bin/mcp.js over StdioClientTransport, initialize, list authorized tools, and never trigger agy/codex/gh', async () => {
     const mcpBinPath = path.resolve(process.cwd(), 'bin/mcp.js');
     expect(fs.existsSync(mcpBinPath), `bin/mcp.js must exist at ${mcpBinPath}`).toBe(true);
 
@@ -75,10 +75,11 @@ describe('MCP Stdio Client & Real Child Process Integration', () => {
     const toolsResponse = await client.listTools();
     const toolNames = toolsResponse.tools.map((t) => t.name).sort();
 
-    // 3. Prove exactly the six permitted tools exist
-    expect(toolNames).toHaveLength(6);
+    // 3. Prove exactly the permitted tools exist
+    expect(toolNames).toHaveLength(7);
     expect(toolNames).toEqual([
       'orchestrator_cancel_task',
+      'orchestrator_configure_allowed_base',
       'orchestrator_create_task',
       'orchestrator_get_task_status',
       'orchestrator_list_tasks',

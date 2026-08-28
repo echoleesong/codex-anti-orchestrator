@@ -113,6 +113,10 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       })),
       getStateDir: vi.fn(() => '/Users/lisong/.codex-anti-orchestrator/worktrees'),
       getAllowedBaseDir: vi.fn(() => '/Users/lisong/code'),
+      configureAllowedBaseDir: vi.fn((allowedBaseDir: string) => ({
+        allowedBaseDir,
+        confirmedAt: '2026-08-28T00:00:00.000Z',
+      })),
     };
 
     const setup = await setupClientAndServer(mockOrchestrator);
@@ -120,12 +124,13 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
   });
 
   describe('Tool Listing & Boundary Invariants', () => {
-    it('should expose strictly the 6 authorized orchestration tools', async () => {
+    it('should expose only the authorized orchestration tools', async () => {
       const toolsResponse = await client.listTools();
       const toolNames = toolsResponse.tools.map((t) => t.name);
 
-      expect(toolNames).toHaveLength(6);
+      expect(toolNames).toHaveLength(7);
       expect(toolNames).toEqual([
+        'orchestrator_configure_allowed_base',
         'orchestrator_create_task',
         'orchestrator_run_task',
         'orchestrator_get_task_status',
@@ -203,6 +208,21 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       expect(properties).toHaveProperty('taskId');
       expect(properties).toHaveProperty('guidance');
       expect(properties).not.toHaveProperty('override');
+    });
+  });
+
+  describe('Allowed base configuration', () => {
+    it('persists only an explicitly confirmed allowed repository root', async () => {
+      const res = await client.callTool({
+        name: 'orchestrator_configure_allowed_base',
+        arguments: { allowedBaseDir: '/Users/other/projects', confirmed: true },
+      });
+      expect(res.isError).toBeFalsy();
+      const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
+      expect(parsed.data.allowedBaseDir).toBe('/Users/other/projects');
+      expect(mockOrchestrator.configureAllowedBaseDir).toHaveBeenCalledWith(
+        '/Users/other/projects'
+      );
     });
   });
 

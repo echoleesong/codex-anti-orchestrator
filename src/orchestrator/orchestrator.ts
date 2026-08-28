@@ -9,7 +9,6 @@ import {
   isGitRepository,
 } from '../git/git-utils.js';
 import {
-  DEFAULT_ALLOWED_BASE_DIR,
   generateSafeTaskId,
   getDefaultStateDir,
   getTaskBranchName,
@@ -18,6 +17,11 @@ import {
   validateStateDirIsolation,
   validateTargetRepoPath,
 } from '../security/path-validator.js';
+import {
+  loadAllowedBaseConfig,
+  saveAllowedBaseConfig,
+  suggestAllowedBaseDir,
+} from '../security/allowed-base-config.js';
 import {
   listTaskStates,
   loadTaskState,
@@ -54,7 +58,7 @@ const DEFAULT_CI_POLL_INTERVAL_MS = 10_000;
 
 export class Orchestrator implements IOrchestrator {
   private stateDir: string;
-  private allowedBaseDir: string;
+  private allowedBaseDir?: string;
   private defaultExecutor: CommandExecutor;
   private agyAdapter: AgyAdapter;
   private codexAdapter: CodexAdapter;
@@ -68,7 +72,7 @@ export class Orchestrator implements IOrchestrator {
     } = {}
   ) {
     this.stateDir = options.stateDir || getDefaultStateDir();
-    this.allowedBaseDir = options.allowedBaseDir || DEFAULT_ALLOWED_BASE_DIR;
+    this.allowedBaseDir = options.allowedBaseDir;
     this.defaultExecutor = options.executor || defaultExecutor;
 
     this.agyAdapter = new AgyAdapter(this.defaultExecutor);
@@ -80,8 +84,31 @@ export class Orchestrator implements IOrchestrator {
     return this.stateDir;
   }
 
-  getAllowedBaseDir(): string {
+  getAllowedBaseDir(): string | undefined {
     return this.allowedBaseDir;
+  }
+
+  configureAllowedBaseDir(allowedBaseDir: string): {
+    allowedBaseDir: string;
+    confirmedAt: string;
+  } {
+    const config = saveAllowedBaseConfig(this.stateDir, allowedBaseDir);
+    this.allowedBaseDir = config.allowedBaseDir;
+    return config;
+  }
+
+  private resolveAllowedBaseDir(
+    stateDir: string,
+    requestedAllowedBaseDir?: string
+  ): string | undefined {
+    if (requestedAllowedBaseDir) return requestedAllowedBaseDir;
+    if (this.allowedBaseDir) return this.allowedBaseDir;
+    const config = loadAllowedBaseConfig(stateDir);
+    if (config) {
+      this.allowedBaseDir = config.allowedBaseDir;
+      return config.allowedBaseDir;
+    }
+    return undefined;
   }
 
   private recordEvent(
@@ -189,9 +216,25 @@ export class Orchestrator implements IOrchestrator {
    */
   async createTask(options: CreateTaskOptions): Promise<TaskRecord> {
     const executor = options.executor || this.defaultExecutor;
-    const allowedBase = options.allowedBaseDir || this.allowedBaseDir;
     const stateDir = options.stateDir || this.stateDir;
+    const allowedBase = this.resolveAllowedBaseDir(stateDir, options.allowedBaseDir);
     const maxReviewCycles = options.maxReviewCycles ?? 3;
+
+    if (!allowedBase) {
+      let suggestedBase: string;
+      try {
+        suggestedBase = suggestAllowedBaseDir(options.repoPath);
+      } catch (error) {
+        throw new Error(
+          `Allowed base directory is not configured. Ask the user to confirm a project parent directory before retrying. Suggested directory could not be derived: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+      throw new Error(
+        `Allowed base directory is not configured. Ask the user to confirm this directory before creating a task: ${suggestedBase}. Then call orchestrator_configure_allowed_base with that exact path and confirmed: true.`
+      );
+    }
 
     // 1. Validate Target Repository Path
     const pathCheck = validateTargetRepoPath(options.repoPath, allowedBase);
