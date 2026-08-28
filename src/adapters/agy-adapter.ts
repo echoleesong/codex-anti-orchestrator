@@ -9,6 +9,9 @@ import type {
 } from '../types.js';
 import { defaultExecutor } from '../utils/exec.js';
 
+export const DEFAULT_AGY_PRINT_TIMEOUT_MS = 300_000; // 5 minutes matching agy default print-timeout
+export const PROCESS_TIMEOUT_BUFFER_MS = 30_000; // 30 seconds process overhead buffer
+
 export class AgyAdapter {
   private executor: CommandExecutor;
 
@@ -107,17 +110,111 @@ export class AgyAdapter {
   }
 
   /**
-   * Executes agy in sandboxed mode inside the isolated external worktree.
+   * Validates explicit model option.
+   * Model must be a non-empty string, cannot start with a hyphen/flag prefix, and must match allowed naming pattern.
+   */
+  validateModel(model: unknown): string {
+    if (typeof model !== 'string' || !model.trim()) {
+      throw new Error('Model must be a non-empty string.');
+    }
+    const trimmed = model.trim();
+    if (trimmed.startsWith('-')) {
+      throw new Error(`Invalid model "${trimmed}": flag prefixes are not allowed.`);
+    }
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(trimmed)) {
+      throw new Error(`Invalid model "${trimmed}": contains disallowed characters.`);
+    }
+    return trimmed;
+  }
+
+  /**
+   * Parses a validated duration string into milliseconds.
+   */
+  parseDurationMs(durationStr: string): number {
+    const trimmed = durationStr.trim();
+    const match = /^(\d+)(ms|s|m|h)?$/i.exec(trimmed);
+    if (!match) {
+      throw new Error(`Invalid duration format "${trimmed}".`);
+    }
+    const val = parseInt(match[1], 10);
+    const unit = (match[2] || 's').toLowerCase();
+    if (unit === 'ms') return val;
+    if (unit === 's') return val * 1000;
+    if (unit === 'm') return val * 60 * 1000;
+    if (unit === 'h') return val * 60 * 60 * 1000;
+    return val * 1000;
+  }
+
+  /**
+   * Validates bounded print timeout option.
+   * Accepts explicit duration strings (e.g. "30s", "5m", "1800s", "1000ms").
+   * Allowed bounds: minimum 1 second (1000ms), maximum 30 minutes (1800s / 1800000ms).
+   */
+  validatePrintTimeout(timeout: unknown): string {
+    if (typeof timeout !== 'string') {
+      throw new Error('Print timeout must be a duration string (e.g. "30s", "5m", "1800s").');
+    }
+
+    const trimmed = timeout.trim();
+    if (!trimmed || trimmed.startsWith('-')) {
+      throw new Error('Print timeout must be a valid duration string.');
+    }
+    const match = /^(\d+)(ms|s|m|h)?$/i.exec(trimmed);
+    if (!match) {
+      throw new Error(
+        `Invalid print timeout format "${trimmed}". Expected duration such as "30s", "5m", "1800s".`
+      );
+    }
+    const ms = this.parseDurationMs(trimmed);
+
+    const MIN_MS = 1000;
+    const MAX_MS = 30 * 60 * 1000;
+
+    if (ms < MIN_MS) {
+      throw new Error(
+        `Print timeout "${trimmed}" (${ms}ms) is below the minimum allowed bound of 1s (1000ms).`
+      );
+    }
+    if (ms > MAX_MS) {
+      throw new Error(
+        `Print timeout "${trimmed}" (${ms}ms) exceeds the maximum allowed bound of 30m (1800000ms).`
+      );
+    }
+    return trimmed;
+  }
+
+  /**
+   * Executes agy in sandboxed noninteractive mode inside the isolated external worktree.
    * Note: agy invocations are self-contained per iteration; no session daemon resume is promised.
    */
   async runAgy(options: AgyRunOptions): Promise<AgyExecutionResult> {
     const executor = options.executor || this.executor;
-    const timeoutMs = options.timeoutMs ?? 180000; // 3 minutes default for agent coding
 
     this.validateWorktree(options.worktreePath, options.targetRepoPath);
 
-    // Strict command invariant: uses argument array only, explicitly chooses --sandbox and --edit mode
-    const args = ['--sandbox', '--edit', '-p', options.prompt];
+    // Strict command invariant: uses argument array only, explicitly chooses --sandbox, safe --mode accept-edits, and --print
+    const args: string[] = ['--sandbox', '--mode', 'accept-edits'];
+
+    if (options.model !== undefined) {
+      const model = this.validateModel(options.model);
+      args.push('--model', model);
+    }
+
+    let printTimeoutMs = DEFAULT_AGY_PRINT_TIMEOUT_MS;
+    if (options.printTimeout !== undefined) {
+      const printTimeout = this.validatePrintTimeout(options.printTimeout);
+      args.push('--print-timeout', printTimeout);
+      printTimeoutMs = this.parseDurationMs(printTimeout);
+    }
+
+    args.push('--print', options.prompt);
+
+    // Ensure child process timeout is safely consistent with print timeout plus fixed overhead
+    const minRequiredProcessTimeout = printTimeoutMs + PROCESS_TIMEOUT_BUFFER_MS;
+    const timeoutMs =
+      options.timeoutMs !== undefined
+        ? Math.max(options.timeoutMs, minRequiredProcessTimeout)
+        : minRequiredProcessTimeout;
 
     const result = await executor('agy', args, {
       cwd: options.worktreePath,

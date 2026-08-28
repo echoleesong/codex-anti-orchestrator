@@ -77,6 +77,8 @@ This document defines the security boundaries, operational constraints, and safe
 
 ### 2.9 Safe Antigravity CLI (`agy`) Execution & Statelessness
 
+- **Noninteractive Mode & Permissions Boundary**: `agy` is invoked noninteractively using `--mode accept-edits` and `--print` within the isolated external worktree with `--sandbox` restrictions enabled.
+- **Explicit Options Validation**: Only validated explicit `--model` identifiers and bounded `--print-timeout` durations (between 1s and 30m) are supported; arbitrary CLI flags are prohibited.
 - **Forbidden Flags**: Invoking `agy` with `--dangerously-skip-permissions` is strictly prohibited under all circumstances.
 - **Sandbox Compliance**: Agent operations are explicitly invoked with `--sandbox` and confined to the isolated external worktree.
 - **Stateless Invocation**: `agy` tasks are self-contained per iteration with explicit prompt context. No false promises of internal daemon session resumption are made.

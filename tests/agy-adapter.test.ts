@@ -79,7 +79,120 @@ describe('Antigravity CLI (agy) Adapter', () => {
     expect(fixPrompt).toContain('FAIL tests/auth.test.ts');
   });
 
-  it('should invoke agy with argument array, --sandbox flag, and isolated worktree cwd', async () => {
+  describe('Model validation', () => {
+    const adapter = new AgyAdapter();
+
+    it('should accept valid model identifiers', () => {
+      expect(adapter.validateModel('gemini-2.5-pro')).toBe('gemini-2.5-pro');
+      expect(adapter.validateModel('gpt-4o')).toBe('gpt-4o');
+      expect(adapter.validateModel('claude-3-5-sonnet:20241022')).toBe(
+        'claude-3-5-sonnet:20241022'
+      );
+      expect(adapter.validateModel('org/model_v1.0')).toBe('org/model_v1.0');
+    });
+
+    it('should reject non-string or empty model values', () => {
+      expect(() => adapter.validateModel('')).toThrow(/Model must be a non-empty string/);
+      expect(() => adapter.validateModel('   ')).toThrow(/Model must be a non-empty string/);
+      expect(() => adapter.validateModel(null)).toThrow(/Model must be a non-empty string/);
+      expect(() => adapter.validateModel(undefined)).toThrow(/Model must be a non-empty string/);
+      expect(() => adapter.validateModel(123)).toThrow(/Model must be a non-empty string/);
+    });
+
+    it('should reject flag-prefixed model strings', () => {
+      expect(() => adapter.validateModel('--dangerously-skip-permissions')).toThrow(
+        /flag prefixes are not allowed/
+      );
+      expect(() => adapter.validateModel('-m')).toThrow(/flag prefixes are not allowed/);
+    });
+
+    it('should reject models with illegal characters', () => {
+      expect(() => adapter.validateModel('model with spaces')).toThrow(
+        /contains disallowed characters/
+      );
+      expect(() => adapter.validateModel('model;rm -rf /')).toThrow(
+        /contains disallowed characters/
+      );
+      expect(() => adapter.validateModel('model`whoami`')).toThrow(
+        /contains disallowed characters/
+      );
+    });
+  });
+
+  describe('Bounded print timeout validation', () => {
+    const adapter = new AgyAdapter();
+
+    it('should accept valid duration strings within 1s to 30m', () => {
+      expect(adapter.validatePrintTimeout('1s')).toBe('1s');
+      expect(adapter.validatePrintTimeout('30s')).toBe('30s');
+      expect(adapter.validatePrintTimeout('300s')).toBe('300s');
+      expect(adapter.validatePrintTimeout('5m')).toBe('5m');
+      expect(adapter.validatePrintTimeout('30m')).toBe('30m');
+      expect(adapter.validatePrintTimeout('1000ms')).toBe('1000ms');
+      expect(adapter.validatePrintTimeout('1800s')).toBe('1800s');
+      expect(adapter.validatePrintTimeout('1800000ms')).toBe('1800000ms');
+    });
+
+    it('should reject timeouts below minimum bound of 1s (1000ms)', () => {
+      expect(() => adapter.validatePrintTimeout('500ms')).toThrow(
+        /below the minimum allowed bound/
+      );
+      expect(() => adapter.validatePrintTimeout('0s')).toThrow(/below the minimum allowed bound/);
+      expect(() => adapter.validatePrintTimeout('0m')).toThrow(/below the minimum allowed bound/);
+    });
+
+    it('should reject timeouts above maximum bound of 30m (1800s / 1800000ms)', () => {
+      expect(() => adapter.validatePrintTimeout('1801s')).toThrow(
+        /exceeds the maximum allowed bound/
+      );
+      expect(() => adapter.validatePrintTimeout('1800001ms')).toThrow(
+        /exceeds the maximum allowed bound/
+      );
+      expect(() => adapter.validatePrintTimeout('31m')).toThrow(
+        /exceeds the maximum allowed bound/
+      );
+      expect(() => adapter.validatePrintTimeout('1h')).toThrow(/exceeds the maximum allowed bound/);
+      expect(() => adapter.validatePrintTimeout('2000s')).toThrow(
+        /exceeds the maximum allowed bound/
+      );
+    });
+
+    it('should reject invalid, flag-prefixed, or arbitrary timeout strings', () => {
+      expect(() => adapter.validatePrintTimeout('')).toThrow(
+        /Print timeout must be a valid duration string/
+      );
+      expect(() => adapter.validatePrintTimeout('   ')).toThrow(
+        /Print timeout must be a valid duration string/
+      );
+      expect(() => adapter.validatePrintTimeout('--timeout=10')).toThrow(
+        /Print timeout must be a valid duration string/
+      );
+      expect(() => adapter.validatePrintTimeout('-t')).toThrow(
+        /Print timeout must be a valid duration string/
+      );
+      expect(() => adapter.validatePrintTimeout('infinite')).toThrow(
+        /Invalid print timeout format/
+      );
+      expect(() => adapter.validatePrintTimeout('10xyz')).toThrow(/Invalid print timeout format/);
+    });
+
+    it('should reject non-string timeout values', () => {
+      expect(() => adapter.validatePrintTimeout(300)).toThrow(
+        /Print timeout must be a duration string/
+      );
+      expect(() => adapter.validatePrintTimeout(null)).toThrow(
+        /Print timeout must be a duration string/
+      );
+      expect(() => adapter.validatePrintTimeout(undefined)).toThrow(
+        /Print timeout must be a duration string/
+      );
+      expect(() => adapter.validatePrintTimeout({})).toThrow(
+        /Print timeout must be a duration string/
+      );
+    });
+  });
+
+  it('should invoke agy with argument array, --sandbox, --mode accept-edits, and --print', async () => {
     const capturedCalls: Array<{
       file: string;
       args: string[];
@@ -107,10 +220,132 @@ describe('Antigravity CLI (agy) Adapter', () => {
     const call = capturedCalls[0];
     expect(call.file).toBe('agy');
     expect(call.args[0]).toBe('--sandbox');
-    expect(call.args[1]).toBe('--edit');
-    expect(call.args[2]).toBe('-p');
-    expect(call.options?.cwd).toBe(worktreePath);
+    expect(call.args[1]).toBe('--mode');
+    expect(call.args[2]).toBe('accept-edits');
+    expect(call.args[3]).toBe('--print');
+    expect(call.args).not.toContain('--edit');
+    expect(call.args).not.toContain('-p');
     expect(call.args).not.toContain('--dangerously-skip-permissions');
+    expect(call.options?.cwd).toBe(worktreePath);
+  });
+
+  it('should support validated model and bounded print timeout options in agy args', async () => {
+    const capturedCalls: Array<{
+      file: string;
+      args: string[];
+      options?: Record<string, unknown>;
+    }> = [];
+
+    const mockExecutor: CommandExecutor = async (file, args, options) => {
+      capturedCalls.push({ file, args, options });
+      return {
+        exitCode: 0,
+        stdout: 'agy fix completed',
+        stderr: '',
+      };
+    };
+
+    const adapter = new AgyAdapter(mockExecutor);
+    const result = await adapter.runFix(
+      worktreePath,
+      'Fix user profile API',
+      { blockingIssues: ['Fix syntax error'] },
+      {
+        targetRepoPath: testRepoPath,
+        model: 'gemini-2.5-pro',
+        printTimeout: '5m',
+      }
+    );
+
+    expect(result.success).toBe(true);
+    expect(capturedCalls.length).toBe(1);
+
+    const call = capturedCalls[0];
+    expect(call.args).toEqual([
+      '--sandbox',
+      '--mode',
+      'accept-edits',
+      '--model',
+      'gemini-2.5-pro',
+      '--print-timeout',
+      '5m',
+      '--print',
+      expect.stringContaining('### Original Task Prompt'),
+    ]);
+  });
+
+  describe('Duration parsing', () => {
+    const adapter = new AgyAdapter();
+
+    it('should parse duration strings into milliseconds accurately', () => {
+      expect(adapter.parseDurationMs('1000ms')).toBe(1000);
+      expect(adapter.parseDurationMs('30s')).toBe(30000);
+      expect(adapter.parseDurationMs('5m')).toBe(300000);
+      expect(adapter.parseDurationMs('30m')).toBe(1800000);
+    });
+  });
+
+  describe('Process timeout consistency invariant', () => {
+    it('should assign process timeout consistent with default print timeout and fixed overhead', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      const mockExecutor: CommandExecutor = async (_file, _args, options) => {
+        capturedOptions = options;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+
+      const adapter = new AgyAdapter(mockExecutor);
+      await adapter.runDevelopment(worktreePath, 'Sample prompt');
+
+      expect(capturedOptions?.timeoutMs).toBe(330000); // 5m (300s) + 30s buffer
+    });
+
+    it('should adjust process timeout to exceed requested print-timeout plus buffer', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      const mockExecutor: CommandExecutor = async (_file, _args, options) => {
+        capturedOptions = options;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+
+      const adapter = new AgyAdapter(mockExecutor);
+      await adapter.runDevelopment(worktreePath, 'Sample prompt', {
+        printTimeout: '10m',
+      });
+
+      expect(capturedOptions?.timeoutMs).toBe(630000); // 10m (600s) + 30s buffer
+    });
+
+    it('should prevent premature process termination by elevating undersized timeoutMs to cover printTimeout', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      const mockExecutor: CommandExecutor = async (_file, _args, options) => {
+        capturedOptions = options;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+
+      const adapter = new AgyAdapter(mockExecutor);
+      // User requested 5m print timeout but undersized timeoutMs of 60s
+      await adapter.runDevelopment(worktreePath, 'Sample prompt', {
+        printTimeout: '5m',
+        timeoutMs: 60000,
+      });
+
+      expect(capturedOptions?.timeoutMs).toBe(330000); // Elevates to 300s + 30s buffer
+    });
+
+    it('should respect larger explicit timeoutMs when exceeding printTimeout plus buffer', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      const mockExecutor: CommandExecutor = async (_file, _args, options) => {
+        capturedOptions = options;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+
+      const adapter = new AgyAdapter(mockExecutor);
+      await adapter.runDevelopment(worktreePath, 'Sample prompt', {
+        printTimeout: '5m',
+        timeoutMs: 500000,
+      });
+
+      expect(capturedOptions?.timeoutMs).toBe(500000);
+    });
   });
 
   it('should handle agy execution failures gracefully', async () => {

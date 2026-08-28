@@ -159,6 +159,8 @@ export interface AgyExecutionResult {
 export interface AgyRunOptions {
   worktreePath: string;
   prompt: string;
+  model?: string;
+  printTimeout?: string;
   stateDir?: string;
   targetRepoPath?: string;
   executor?: CommandExecutor;
