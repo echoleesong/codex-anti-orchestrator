@@ -9,6 +9,9 @@ import type {
 } from '../types.js';
 import { defaultExecutor } from '../utils/exec.js';
 
+export const DEFAULT_AGY_PRINT_TIMEOUT_MS = 300_000; // 5 minutes matching agy default print-timeout
+export const PROCESS_TIMEOUT_BUFFER_MS = 30_000; // 30 seconds process overhead buffer
+
 export class AgyAdapter {
   private executor: CommandExecutor;
 
@@ -125,6 +128,24 @@ export class AgyAdapter {
   }
 
   /**
+   * Parses a validated duration string into milliseconds.
+   */
+  parseDurationMs(durationStr: string): number {
+    const trimmed = durationStr.trim();
+    const match = /^(\d+)(ms|s|m|h)?$/i.exec(trimmed);
+    if (!match) {
+      throw new Error(`Invalid duration format "${trimmed}".`);
+    }
+    const val = parseInt(match[1], 10);
+    const unit = (match[2] || 's').toLowerCase();
+    if (unit === 'ms') return val;
+    if (unit === 's') return val * 1000;
+    if (unit === 'm') return val * 60 * 1000;
+    if (unit === 'h') return val * 60 * 60 * 1000;
+    return val * 1000;
+  }
+
+  /**
    * Validates bounded print timeout option.
    * Accepts explicit duration strings (e.g. "30s", "5m", "1800s", "1000ms").
    * Allowed bounds: minimum 1 second (1000ms), maximum 30 minutes (1800s / 1800000ms).
@@ -144,13 +165,7 @@ export class AgyAdapter {
         `Invalid print timeout format "${trimmed}". Expected duration such as "30s", "5m", "1800s".`
       );
     }
-    const val = parseInt(match[1], 10);
-    const unit = (match[2] || 's').toLowerCase();
-    let ms = 0;
-    if (unit === 'ms') ms = val;
-    else if (unit === 's') ms = val * 1000;
-    else if (unit === 'm') ms = val * 60 * 1000;
-    else if (unit === 'h') ms = val * 60 * 60 * 1000;
+    const ms = this.parseDurationMs(trimmed);
 
     const MIN_MS = 1000;
     const MAX_MS = 30 * 60 * 1000;
@@ -174,7 +189,6 @@ export class AgyAdapter {
    */
   async runAgy(options: AgyRunOptions): Promise<AgyExecutionResult> {
     const executor = options.executor || this.executor;
-    const timeoutMs = options.timeoutMs ?? 180000; // 3 minutes default for agent coding
 
     this.validateWorktree(options.worktreePath, options.targetRepoPath);
 
@@ -186,12 +200,21 @@ export class AgyAdapter {
       args.push('--model', model);
     }
 
+    let printTimeoutMs = DEFAULT_AGY_PRINT_TIMEOUT_MS;
     if (options.printTimeout !== undefined) {
       const printTimeout = this.validatePrintTimeout(options.printTimeout);
       args.push('--print-timeout', printTimeout);
+      printTimeoutMs = this.parseDurationMs(printTimeout);
     }
 
     args.push('--print', options.prompt);
+
+    // Ensure child process timeout is safely consistent with print timeout plus fixed overhead
+    const minRequiredProcessTimeout = printTimeoutMs + PROCESS_TIMEOUT_BUFFER_MS;
+    const timeoutMs =
+      options.timeoutMs !== undefined
+        ? Math.max(options.timeoutMs, minRequiredProcessTimeout)
+        : minRequiredProcessTimeout;
 
     const result = await executor('agy', args, {
       cwd: options.worktreePath,

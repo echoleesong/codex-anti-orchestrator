@@ -274,6 +274,80 @@ describe('Antigravity CLI (agy) Adapter', () => {
     ]);
   });
 
+  describe('Duration parsing', () => {
+    const adapter = new AgyAdapter();
+
+    it('should parse duration strings into milliseconds accurately', () => {
+      expect(adapter.parseDurationMs('1000ms')).toBe(1000);
+      expect(adapter.parseDurationMs('30s')).toBe(30000);
+      expect(adapter.parseDurationMs('5m')).toBe(300000);
+      expect(adapter.parseDurationMs('30m')).toBe(1800000);
+    });
+  });
+
+  describe('Process timeout consistency invariant', () => {
+    it('should assign process timeout consistent with default print timeout and fixed overhead', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      const mockExecutor: CommandExecutor = async (_file, _args, options) => {
+        capturedOptions = options;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+
+      const adapter = new AgyAdapter(mockExecutor);
+      await adapter.runDevelopment(worktreePath, 'Sample prompt');
+
+      expect(capturedOptions?.timeoutMs).toBe(330000); // 5m (300s) + 30s buffer
+    });
+
+    it('should adjust process timeout to exceed requested print-timeout plus buffer', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      const mockExecutor: CommandExecutor = async (_file, _args, options) => {
+        capturedOptions = options;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+
+      const adapter = new AgyAdapter(mockExecutor);
+      await adapter.runDevelopment(worktreePath, 'Sample prompt', {
+        printTimeout: '10m',
+      });
+
+      expect(capturedOptions?.timeoutMs).toBe(630000); // 10m (600s) + 30s buffer
+    });
+
+    it('should prevent premature process termination by elevating undersized timeoutMs to cover printTimeout', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      const mockExecutor: CommandExecutor = async (_file, _args, options) => {
+        capturedOptions = options;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+
+      const adapter = new AgyAdapter(mockExecutor);
+      // User requested 5m print timeout but undersized timeoutMs of 60s
+      await adapter.runDevelopment(worktreePath, 'Sample prompt', {
+        printTimeout: '5m',
+        timeoutMs: 60000,
+      });
+
+      expect(capturedOptions?.timeoutMs).toBe(330000); // Elevates to 300s + 30s buffer
+    });
+
+    it('should respect larger explicit timeoutMs when exceeding printTimeout plus buffer', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      const mockExecutor: CommandExecutor = async (_file, _args, options) => {
+        capturedOptions = options;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+
+      const adapter = new AgyAdapter(mockExecutor);
+      await adapter.runDevelopment(worktreePath, 'Sample prompt', {
+        printTimeout: '5m',
+        timeoutMs: 500000,
+      });
+
+      expect(capturedOptions?.timeoutMs).toBe(500000);
+    });
+  });
+
   it('should handle agy execution failures gracefully', async () => {
     const mockExecutor: CommandExecutor = async () => ({
       exitCode: 1,
