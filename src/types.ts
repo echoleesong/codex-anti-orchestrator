@@ -91,6 +91,25 @@ export interface TaskDiagnostics {
   worktreePreserved: boolean;
   lastReviewVerdict?: CodexVerdict;
   lastTestPassed?: boolean;
+  ciWaitAttempts?: number;
+  ciWaitHistory?: CIWaitObservation[];
+}
+
+export type TaskEventSource = 'ORCHESTRATOR' | 'ANTI' | 'CODEX' | 'GITHUB_CI';
+
+export interface TaskEvent {
+  timestamp: string;
+  source: TaskEventSource;
+  message: string;
+  detail?: string;
+}
+
+export interface CIWaitObservation {
+  timestamp: string;
+  attempt: number;
+  status: 'PENDING' | 'PASSING' | 'FAILING' | 'UNAVAILABLE';
+  summary: string;
+  checks: PRCheckItem[];
 }
 
 export interface TaskRecord {
@@ -106,6 +125,7 @@ export interface TaskRecord {
   transitions: StateTransitionRecord[];
   diagnostics: TaskDiagnostics;
   metadata?: Record<string, unknown>;
+  events?: TaskEvent[];
 }
 
 export interface CreateTaskOptions {
@@ -228,6 +248,12 @@ export interface PRChecksResult {
   error?: string;
 }
 
+export interface CIWaitOptions {
+  maxAttempts?: number;
+  pollIntervalMs?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
+}
+
 export interface RunTaskLoopOptions {
   taskId: string;
   stateDir?: string;
@@ -250,6 +276,7 @@ export interface IOrchestrator {
         worktreePath: string,
         executor: CommandExecutor
       ) => Promise<{ pass: boolean; errors?: string }>;
+      ciWait?: CIWaitOptions;
     }
   ): Promise<TaskRecord>;
   getTask(taskId: string): Promise<TaskRecord>;

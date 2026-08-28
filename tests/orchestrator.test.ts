@@ -152,6 +152,21 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
     expect(resumedGuidance.prompt).toContain('Fix null pointer in auth.ts');
   });
 
+  it('resumes development failures from WORKTREE_READY rather than an unhandled intermediate state', async () => {
+    const task = await orchestrator.createTask({
+      repoPath: testRepoPath,
+      prompt: 'Task with failed development invocation',
+    });
+    transitionTaskState(task, 'AGY_DEVELOPING');
+    transitionTaskState(task, 'FAILED', { reason: 'Development command failed.' });
+    const { saveTaskState } = await import('../src/state/state-machine.js');
+    await saveTaskState(tempStateDir, task);
+
+    const resumed = await orchestrator.resumeTask(task.id);
+
+    expect(resumed.state).toBe('WORKTREE_READY');
+  });
+
   describe('commitWorktreeChanges Fail-Closed Staging Policy', () => {
     it('should stage only validated safe files and commit successfully', async () => {
       const task = await orchestrator.createTask({

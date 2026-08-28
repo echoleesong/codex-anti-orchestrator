@@ -56,7 +56,7 @@ export function redactSecrets(text: string): string {
 
   // 6. Generic key-value secret assignments: api_key=..., token: ..., secret=..., password=...
   redacted = redacted.replace(
-    /((?:api[_-]?key|access[_-]?token|auth[_-]?token|secret[_-]?key|password)\s*[:=]\s*["']?)[a-zA-Z0-9_\-\.]{8,}(["']?)/gi,
+    /((?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret[_-]?key|password)\s*[:=]\s*["']?)[a-zA-Z0-9_\-\.]{8,}(["']?)/gi,
     '$1[REDACTED_SECRET]$2'
   );
 

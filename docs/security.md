@@ -89,6 +89,13 @@ This document defines the security boundaries, operational constraints, and safe
 - **Forbidden Actions**: Any operation containing `merge`, `workflow`, `release`, `deploy`, `dispatch`, or `publish` is rejected by assertion.
 - **Task Branch Restriction**: Pushes are strictly restricted to `anti/*` branches.
 
+### 2.11 Local Monitor Boundary
+
+- **Localhost Only**: The monitor binds only to `127.0.0.1`. It rejects wildcard and LAN hosts and has no remote hosting, authentication bypass, or public tunnel feature.
+- **Read-Only API**: The monitor exposes only task-list and task-detail `GET` endpoints. It provides no create, run, resume, cancel, merge, or deployment endpoint.
+- **Defensive Responses**: Task IDs are allow-listed, responses are bounded, traversal attempts are rejected, and responses include CSP, no-store, no-sniff, deny-frame, and no-referrer headers.
+- **Audit Feed Redaction**: Agent event summaries and monitor-visible diagnostics are passed through the same secret redaction routine used for process output. Raw credentials and unrestricted model transcripts are never exposed.
+
 ---
 
 ## 3. Threat Model & Mitigations
