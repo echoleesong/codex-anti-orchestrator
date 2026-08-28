@@ -60,6 +60,7 @@ export type TaskState =
   | 'PR_CREATING'
   | 'CODEX_REVIEWING'
   | 'REVIEW_EVALUATING'
+  | 'AGY_VALIDATING'
   | 'AGY_FIXING'
   | 'PR_UPDATING'
   | 'AWAITING_HUMAN_APPROVAL'
@@ -91,6 +92,8 @@ export interface TaskDiagnostics {
   worktreePreserved: boolean;
   lastReviewVerdict?: CodexVerdict;
   lastTestPassed?: boolean;
+  humanVerificationChecklist?: string[];
+  liveVerification?: LiveVerificationResult;
   ciWaitAttempts?: number;
   ciWaitHistory?: CIWaitObservation[];
 }
@@ -156,6 +159,7 @@ export interface CodexReviewResult {
   summary: string;
   blockingIssues: string[];
   warnings: string[];
+  humanVerificationChecklist: string[];
   parsedCleanly: boolean;
   rawOutput?: string;
 }
@@ -191,6 +195,19 @@ export interface AgyFixFeedback {
   blockingIssues: string[];
   warnings?: string[];
   testErrors?: string;
+}
+
+export type LiveVerificationStatus = 'PASSED' | 'FAILED' | 'UNAVAILABLE';
+
+/** Evidence emitted by Anti after it starts and checks the changed application locally. */
+export interface LiveVerificationResult {
+  status: LiveVerificationStatus;
+  command?: string;
+  url?: string;
+  checks: string[];
+  summary: string;
+  parsedCleanly: boolean;
+  rawOutput?: string;
 }
 
 export interface PROperationResult {
@@ -295,5 +312,8 @@ export interface OrchestratorMcpServerOptions {
   serverInfo?: {
     name?: string;
     version?: string;
+  };
+  monitorLauncher?: {
+    ensureStarted(): Promise<{ url: string; opened: boolean }>;
   };
 }

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AgyAdapter } from '../src/adapters/agy-adapter.js';
+import { AgyAdapter, parseLiveVerificationOutput } from '../src/adapters/agy-adapter.js';
 import type { CommandExecutor, ExecOutput } from '../src/types.js';
 
 describe('Antigravity CLI (agy) Adapter', () => {
@@ -21,6 +21,32 @@ describe('Antigravity CLI (agy) Adapter', () => {
 
   afterEach(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('accepts live verification only with a structured localhost launch report and completed checks', () => {
+    const parsed = parseLiveVerificationOutput(
+      JSON.stringify({
+        status: 'PASSED',
+        command: 'npm run dev -- --host 127.0.0.1',
+        url: 'http://127.0.0.1:5173',
+        checks: ['Created record appears in the list.'],
+        summary: 'Local smoke test passed.',
+      })
+    );
+    expect(parsed.status).toBe('PASSED');
+    expect(parsed.parsedCleanly).toBe(true);
+
+    expect(
+      parseLiveVerificationOutput(
+        JSON.stringify({
+          status: 'PASSED',
+          command: 'npm run dev',
+          url: 'https://example.com',
+          checks: ['Claimed check'],
+          summary: 'Not local.',
+        })
+      ).status
+    ).toBe('UNAVAILABLE');
   });
 
   it('should validate external worktree isolation and reject in-repo paths', () => {

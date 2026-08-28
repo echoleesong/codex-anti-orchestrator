@@ -543,6 +543,7 @@ export class Orchestrator implements IOrchestrator {
             });
 
             task.diagnostics.lastReviewVerdict = reviewResult.verdict;
+            task.diagnostics.humanVerificationChecklist = reviewResult.humanVerificationChecklist;
             this.recordEvent(
               task,
               'CODEX',
@@ -599,18 +600,21 @@ export class Orchestrator implements IOrchestrator {
               return task;
             }
 
-            // Invariant: 100% clean approval requires local tests passing, CI passing, AND clean Codex APPROVE
+            // A clean automated result is not enough for a human handoff. Anti must now start the
+            // current application locally and execute Codex's review-authored observable checks.
             if (testPassed && reviewClean && ciPassing) {
-              transitionTaskState(task, 'AWAITING_HUMAN_APPROVAL', {
+              transitionTaskState(task, 'AGY_VALIDATING', {
                 reason:
-                  'All automated tests passed, GitHub PR CI checks passed, and Codex review reported zero blocking issues.',
-                reviewClean: true,
-                testsPass: true,
-                ciPassing: true,
-                ciProof: ciWait.checks,
+                  'All automated gates passed. Starting Anti local development-environment verification before human PR review.',
               });
+              this.recordEvent(
+                task,
+                'ANTI',
+                'Live verification request dispatched with Codex review checklist.',
+                reviewResult.humanVerificationChecklist.join('\n')
+              );
               await saveTaskState(this.stateDir, task);
-              return task;
+              break;
             }
 
             // If not clean and review cycles exhausted -> NEEDS_USER_DECISION
@@ -637,6 +641,65 @@ export class Orchestrator implements IOrchestrator {
             };
             await saveTaskState(this.stateDir, task);
             break;
+          }
+
+          case 'AGY_VALIDATING': {
+            const checklist = task.diagnostics.humanVerificationChecklist || [];
+            const verification = await agy.runLiveVerification(task.worktreePath, checklist, {
+              targetRepoPath: task.targetRepoPath,
+              stateDir: this.stateDir,
+              executor,
+            });
+            task.diagnostics.liveVerification = verification;
+            this.recordEvent(
+              task,
+              'ANTI',
+              `Live verification completed with status: ${verification.status}.`,
+              verification.summary
+            );
+
+            if (verification.status !== 'PASSED') {
+              transitionTaskState(task, 'NEEDS_USER_DECISION', {
+                reason: `Mandatory local live verification did not pass: ${verification.summary}`,
+              });
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            const verificationCleanliness = await checkGitCleanliness(task.worktreePath, executor);
+            if (!verificationCleanliness.clean) {
+              transitionTaskState(task, 'NEEDS_USER_DECISION', {
+                reason:
+                  'Live verification modified the worktree or repository status could not be verified; no unreviewed changes will be committed automatically.',
+              });
+              this.recordEvent(
+                task,
+                'ORCHESTRATOR',
+                'Live verification left the worktree non-clean; human decision required.',
+                verificationCleanliness.uncommitted.join('\n') || verificationCleanliness.error
+              );
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
+
+            const lastCIObservation = task.diagnostics.ciWaitHistory?.at(-1);
+            const ciProof = {
+              success: lastCIObservation?.status === 'PASSING',
+              allPassing: lastCIObservation?.status === 'PASSING',
+              checks: lastCIObservation?.checks || [],
+            };
+
+            transitionTaskState(task, 'AWAITING_HUMAN_APPROVAL', {
+              reason:
+                'Automated tests and CI passed, Codex supplied human verification points, and Anti recorded a passed localhost live verification.',
+              reviewClean: task.diagnostics.lastReviewVerdict === 'APPROVE',
+              testsPass: task.diagnostics.lastTestPassed === true,
+              ciPassing: ciProof.allPassing,
+              ciProof,
+              liveVerificationPassed: true,
+            });
+            await saveTaskState(this.stateDir, task);
+            return task;
           }
 
           case 'AGY_FIXING': {
@@ -788,9 +851,11 @@ export class Orchestrator implements IOrchestrator {
       const targetState =
         failedState === 'AGY_FIXING' || failedState === 'PR_UPDATING'
           ? 'AGY_FIXING'
-          : failedState === 'CODEX_REVIEWING' || failedState === 'REVIEW_EVALUATING'
-            ? 'CODEX_REVIEWING'
-            : 'WORKTREE_READY';
+          : failedState === 'AGY_VALIDATING'
+            ? 'AGY_VALIDATING'
+            : failedState === 'CODEX_REVIEWING' || failedState === 'REVIEW_EVALUATING'
+              ? 'CODEX_REVIEWING'
+              : 'WORKTREE_READY';
       transitionTaskState(task, targetState, {
         reason: `Resuming task from previous failure in ${task.diagnostics.failedState || 'unknown state'}`,
       });
