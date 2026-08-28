@@ -193,7 +193,8 @@ The MCP server exposes strictly the following six authorized orchestration tools
    - Pre-execution rejection of forbidden flags (`--dangerously-skip-permissions`).
 2. **Antigravity CLI (`agy`) Adapter**:
    - Validates external worktree location outside target repository.
-   - Invokes `agy` with `--sandbox` and structured development/fix prompts.
+   - Invokes `agy` noninteractively with `--sandbox`, `--mode accept-edits`, `--print`, and structured development/fix prompts.
+   - Supports only validated explicit `--model` identifiers and bounded `--print-timeout` durations (prohibiting arbitrary flags).
    - Fully stateless per invocation (no false promise of internal daemon resume).
 3. **OpenAI Codex CLI (`codex`) Adapter**:
    - Operates in strictly read-only sandbox mode (`codex exec --sandbox read-only`).
