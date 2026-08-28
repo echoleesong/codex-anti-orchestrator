@@ -6,11 +6,74 @@ import type {
   AgyFixFeedback,
   AgyRunOptions,
   CommandExecutor,
+  LiveVerificationResult,
 } from '../types.js';
 import { defaultExecutor } from '../utils/exec.js';
 
 export const DEFAULT_AGY_PRINT_TIMEOUT_MS = 300_000; // 5 minutes matching agy default print-timeout
 export const PROCESS_TIMEOUT_BUFFER_MS = 30_000; // 30 seconds process overhead buffer
+
+export function parseLiveVerificationOutput(rawOutput: string): LiveVerificationResult {
+  const fallback = (summary: string): LiveVerificationResult => ({
+    status: 'UNAVAILABLE',
+    checks: [],
+    summary,
+    parsedCleanly: false,
+    rawOutput: rawOutput || '',
+  });
+  if (!rawOutput.trim()) return fallback('Anti returned no live verification evidence.');
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawOutput.trim());
+  } catch {
+    const match = rawOutput.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (!match?.[1]) return fallback('Anti did not return a structured live verification report.');
+    try {
+      parsed = JSON.parse(match[1].trim());
+    } catch {
+      return fallback('Anti returned malformed live verification JSON.');
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object')
+    return fallback('Anti returned invalid live verification data.');
+  const report = parsed as Record<string, unknown>;
+  const status = typeof report.status === 'string' ? report.status.toUpperCase() : '';
+  const command =
+    typeof report.command === 'string' ? report.command.trim().slice(0, 500) : undefined;
+  const url = typeof report.url === 'string' ? report.url.trim().slice(0, 500) : undefined;
+  const checks = Array.isArray(report.checks)
+    ? report.checks
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter(Boolean)
+        .slice(0, 20)
+    : [];
+  const summary =
+    typeof report.summary === 'string' && report.summary.trim()
+      ? report.summary.trim().slice(0, 2_000)
+      : 'Anti did not provide a live verification summary.';
+  const loopbackUrl = url && /^https?:\/\/(127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(url);
+
+  if (status === 'PASSED' && command && loopbackUrl && checks.length > 0) {
+    return { status: 'PASSED', command, url, checks, summary, parsedCleanly: true, rawOutput };
+  }
+  if (status === 'FAILED') {
+    return { status: 'FAILED', command, url, checks, summary, parsedCleanly: true, rawOutput };
+  }
+  return {
+    status: 'UNAVAILABLE',
+    command,
+    url,
+    checks,
+    summary:
+      status === 'PASSED'
+        ? 'Anti claimed a pass without a localhost URL, launch command, or completed checks.'
+        : summary,
+    parsedCleanly: status === 'UNAVAILABLE',
+    rawOutput,
+  };
+}
 
 export class AgyAdapter {
   private executor: CommandExecutor;
@@ -107,6 +170,29 @@ export class AgyAdapter {
     lines.push('3. Verify fixes locally before finishing.');
 
     return lines.join('\n');
+  }
+
+  buildLiveVerificationPrompt(checklist: string[]): string {
+    return [
+      '### Mandatory Live Verification Before Human PR Review',
+      'Do not edit source files during this step. Inspect existing project scripts and documentation, then start the current application locally from this isolated worktree using its supported development command.',
+      'Use only loopback networking (127.0.0.1 or localhost). Do not expose a LAN address, deploy anything, install dependencies, or access files outside this worktree.',
+      'Wait for startup, perform the listed observable checks using available local tools, then stop any server you started before finishing.',
+      '',
+      '### Codex Review Checklist',
+      ...checklist.map((item) => `- ${item}`),
+      '',
+      '### Required Response',
+      'Respond with only this JSON object (or a fenced JSON object):',
+      '{',
+      '  "status": "PASSED" | "FAILED" | "UNAVAILABLE",',
+      '  "command": "exact local development command used",',
+      '  "url": "http://127.0.0.1:<port> or http://localhost:<port>",',
+      '  "checks": ["each completed observable check"],',
+      '  "summary": "what was observed, or why verification could not run"',
+      '}',
+      'Use PASSED only when a localhost development server was actually started and at least one checklist item was observed. Otherwise use FAILED or UNAVAILABLE.',
+    ].join('\n');
   }
 
   /**
@@ -271,5 +357,28 @@ export class AgyAdapter {
       worktreePath,
       prompt: fixPrompt,
     });
+  }
+
+  /** Starts the changed application on localhost and records Anti's structured smoke-test evidence. */
+  async runLiveVerification(
+    worktreePath: string,
+    checklist: string[],
+    options: Partial<AgyRunOptions> = {}
+  ): Promise<LiveVerificationResult> {
+    const result = await this.runAgy({
+      ...options,
+      worktreePath,
+      prompt: this.buildLiveVerificationPrompt(checklist),
+    });
+    if (!result.success) {
+      return {
+        status: 'FAILED',
+        checks: [],
+        summary: result.error || 'Anti failed to run live verification.',
+        parsedCleanly: false,
+        rawOutput: result.stdout || result.stderr,
+      };
+    }
+    return parseLiveVerificationOutput(result.stdout);
   }
 }

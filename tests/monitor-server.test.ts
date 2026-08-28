@@ -54,6 +54,15 @@ describe('local monitor HTTP server', () => {
         maxReviewCycles: 3,
         resumePossible: false,
         worktreePreserved: true,
+        humanVerificationChecklist: ['Open the changed screen and verify the new state.'],
+        liveVerification: {
+          status: 'PASSED',
+          command: 'npm run dev -- --host 127.0.0.1',
+          url: 'javascript:alert(1)',
+          checks: ['Screen rendered with token=supersecretvalue'],
+          summary: 'Bearer abcdefghijklmno',
+          parsedCleanly: true,
+        },
       },
       metadata: { prUrl: 'javascript:alert(1)' },
     };
@@ -78,6 +87,8 @@ describe('local monitor HTTP server', () => {
       expect(detail.body).not.toContain('supersecretvalue');
       expect(detail.body).not.toContain('abcdefghijklmno');
       expect(detail.body).not.toContain('javascript:');
+      expect(detail.body).toContain('Open the changed screen');
+      expect(detail.body).not.toContain('supersecretvalue');
     } finally {
       await monitor.close();
     }

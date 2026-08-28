@@ -14,6 +14,7 @@ describe('OpenAI Codex CLI (codex) Adapter & Review Parser', () => {
         summary: 'All changes are clean, tests pass, and adhere to architecture.',
         blockingIssues: [],
         warnings: ['Consider adding more comments in helper.'],
+        humanVerificationChecklist: ['Open the changed page and verify the expected response.'],
       });
 
       const res = parseCodexReviewOutput(output);
@@ -118,7 +119,8 @@ Here is my review:
   "verdict": "APPROVE",
   "summary": "Code looks great and passes all static analysis.",
   "blockingIssues": [],
-  "warnings": []
+  "warnings": [],
+  "humanVerificationChecklist": ["Open the changed page locally and verify it renders."]
 }
 \`\`\`
 
@@ -171,6 +173,7 @@ Thanks!
             summary: 'Clean implementation with zero issues.',
             blockingIssues: [],
             warnings: [],
+            humanVerificationChecklist: ['Start the local app and verify the changed behavior.'],
           }),
           stderr: '',
         };

@@ -30,7 +30,8 @@ flowchart TD
 
     subgraph Decision & Handoff
         B -->|8. Issues found & cycles < max| D
-        B -->|9. Clean review & all tests pass| G[Awaiting Human Approval]
+    B -->|9. Clean review & all tests pass| V[Anti starts localhost app and validates Codex checklist]
+    V -->|10. Live verification recorded| G[Awaiting Human Approval]
         B -->|10. Blockers remain & cycles reached max| H[Needs User Decision]
         H -->|11a. User overrides with known risks| J[Awaiting Human Override]
         H -->|11b. User provides guidance & retries| D
@@ -124,7 +125,9 @@ npx tsx src/cli.ts monitor
 npx tsx src/cli.ts monitor --port 4390
 ```
 
-The monitor refreshes task state every three seconds and displays task progress, state transitions, PR links, local-test and review status, bounded CI polling observations, and a redacted agent-event feed. It has no mutation, merge, or deployment controls and is reachable only at `http://127.0.0.1:<port>`.
+The monitor refreshes task state every three seconds and displays task progress, state transitions, PR links, local-test and review status, bounded CI polling observations, Codex's human-verification checklist, Anti's localhost verification evidence, and a redacted agent-event feed. It has no mutation, merge, or deployment controls and is reachable only at `http://127.0.0.1:<port>`.
+
+When any MCP tool is called, the MCP process starts this same read-only monitor automatically and opens it in the local browser once. It prefers `http://127.0.0.1:4390`; if that loopback port is already occupied, it safely selects the next available port and reports the URL in the MCP response.
 
 ### Development & Testing
 
@@ -213,7 +216,7 @@ The MCP server exposes strictly the following six authorized orchestration tools
    - Strictly blocks direct pushes to `main` and protected branches; enforces `anti/*` task branches.
 5. **Controlled State Loop**:
    - Enforces legal state machine transitions and bounded iteration cycles (`MAX_REVIEW_CYCLES = 3`).
-   - `AWAITING_HUMAN_APPROVAL` is strictly guarded: requires both automated tests green AND Codex review `APPROVE`.
+   - `AWAITING_HUMAN_APPROVAL` is strictly guarded: requires automated tests green, GitHub CI passing, Codex review `APPROVE` with a human verification checklist, and a structured Anti localhost live-verification report.
    - Preserves diagnostics and isolated worktrees on decision, override, or failure.
 6. **Bounded CI Waiting and Local Observability**:
    - Pending GitHub checks are observed on a bounded schedule rather than immediately requiring user intervention.

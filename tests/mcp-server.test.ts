@@ -58,7 +58,12 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
 
   const setupClientAndServer = async (orchestrator: IOrchestrator) => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const server = createOrchestratorMcpServer({ orchestrator });
+    const server = createOrchestratorMcpServer({
+      orchestrator,
+      monitorLauncher: {
+        ensureStarted: vi.fn(async () => ({ url: 'http://127.0.0.1:4390', opened: true })),
+      },
+    });
     await server.connect(serverTransport);
 
     const mcpClient = new Client(
@@ -217,6 +222,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
 
       const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
       expect(parsed.ok).toBe(true);
+      expect(parsed.monitor).toEqual({ url: 'http://127.0.0.1:4390', opened: true });
       expect(parsed.data.id).toBe(sampleTaskRecord.id);
       expect(parsed.data.prompt).toBe('Implement secure JWT authentication');
       expect(parsed.data.targetRepoPath).toBe('/Users/lisong/code/my-project');

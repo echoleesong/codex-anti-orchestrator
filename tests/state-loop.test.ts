@@ -46,6 +46,7 @@ describe('Controlled State-Loop Execution & Transitions', () => {
     let codexCallCount = 0;
     let testCallCount = 0;
     let prChecksCallCount = 0;
+    let liveVerificationComplete = false;
 
     return async (
       file: string,
@@ -69,7 +70,10 @@ describe('Controlled State-Loop Execution & Transitions', () => {
         if (cwd.includes('worktrees')) {
           return {
             exitCode: 0,
-            stdout: options.worktreeChanges === false ? '' : 'M  src/feature.ts\n',
+            stdout:
+              options.worktreeChanges === false || liveVerificationComplete
+                ? ''
+                : 'M  src/feature.ts\n',
             stderr: '',
           };
         }
@@ -98,6 +102,20 @@ describe('Controlled State-Loop Execution & Transitions', () => {
       if (file === 'agy') {
         if (options.agyFail) {
           return { exitCode: 1, stdout: '', stderr: 'agy fatal compilation error' };
+        }
+        if (args.some((arg) => arg.includes('Mandatory Live Verification'))) {
+          liveVerificationComplete = true;
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              status: 'PASSED',
+              command: 'npm run dev -- --host 127.0.0.1',
+              url: 'http://127.0.0.1:5173',
+              checks: ['The changed flow renders and responds to the Codex checklist.'],
+              summary: 'Started the local application and completed the requested smoke check.',
+            }),
+            stderr: '',
+          };
         }
         return { exitCode: 0, stdout: 'agy code generated successfully\n', stderr: '' };
       }
@@ -214,6 +232,9 @@ describe('Controlled State-Loop Execution & Transitions', () => {
               summary: 'All code meets requirements.',
               blockingIssues: [],
               warnings: [],
+              humanVerificationChecklist: [
+                'Verify the changed user-facing behavior in the local app.',
+              ],
             }),
             stderr: '',
           };
@@ -291,12 +312,14 @@ describe('Controlled State-Loop Execution & Transitions', () => {
     expect(finishedTask.diagnostics.worktreePreserved).toBe(true);
     expect(finishedTask.diagnostics.lastReviewVerdict).toBe('APPROVE');
     expect(finishedTask.diagnostics.lastTestPassed).toBe(true);
+    expect(finishedTask.diagnostics.liveVerification?.status).toBe('PASSED');
 
     const states = finishedTask.transitions.map((t) => t.to);
     expect(states).toContain('AGY_DEVELOPING');
     expect(states).toContain('PR_CREATING');
     expect(states).toContain('CODEX_REVIEWING');
     expect(states).toContain('REVIEW_EVALUATING');
+    expect(states).toContain('AGY_VALIDATING');
     expect(states[states.length - 1]).toBe('AWAITING_HUMAN_APPROVAL');
   });
 

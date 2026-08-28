@@ -11,13 +11,8 @@ export const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
   AGY_DEVELOPING: ['PR_CREATING', 'FAILED', 'ABORTED'],
   PR_CREATING: ['CODEX_REVIEWING', 'FAILED', 'ABORTED'],
   CODEX_REVIEWING: ['REVIEW_EVALUATING', 'FAILED', 'ABORTED'],
-  REVIEW_EVALUATING: [
-    'AWAITING_HUMAN_APPROVAL',
-    'AGY_FIXING',
-    'NEEDS_USER_DECISION',
-    'FAILED',
-    'ABORTED',
-  ],
+  REVIEW_EVALUATING: ['AGY_VALIDATING', 'AGY_FIXING', 'NEEDS_USER_DECISION', 'FAILED', 'ABORTED'],
+  AGY_VALIDATING: ['AWAITING_HUMAN_APPROVAL', 'NEEDS_USER_DECISION', 'FAILED', 'ABORTED'],
   AGY_FIXING: ['PR_UPDATING', 'FAILED', 'ABORTED'],
   PR_UPDATING: ['CODEX_REVIEWING', 'FAILED', 'ABORTED'],
   AWAITING_HUMAN_APPROVAL: ['COMPLETED', 'ABORTED'],
@@ -28,6 +23,7 @@ export const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
     'WORKTREE_PREPARING',
     'WORKTREE_READY',
     'AGY_DEVELOPING',
+    'AGY_VALIDATING',
     'AGY_FIXING',
     'ABORTED',
   ],
@@ -51,6 +47,7 @@ export interface StateTransitionOptions {
   testsPass?: boolean;
   ciPassing?: boolean;
   ciProof?: { allPassing?: boolean; [key: string]: unknown } | PRChecksResult | unknown;
+  liveVerificationPassed?: boolean;
 }
 
 /**
@@ -76,11 +73,11 @@ export function transitionTaskState(
     );
   }
 
-  // Strict invariant: AWAITING_HUMAN_APPROVAL only allowed from REVIEW_EVALUATING on strictly clean pass
+  // Strict invariant: approval only follows the dedicated, recorded local live-verification gate.
   if (nextState === 'AWAITING_HUMAN_APPROVAL') {
-    if (currentState !== 'REVIEW_EVALUATING') {
+    if (currentState !== 'AGY_VALIDATING') {
       throw new Error(
-        `Illegal state transition: AWAITING_HUMAN_APPROVAL can only be entered from REVIEW_EVALUATING (current: ${currentState}).`
+        `Illegal state transition: AWAITING_HUMAN_APPROVAL can only be entered from AGY_VALIDATING (current: ${currentState}).`
       );
     }
     // reviewClean, testsPass, ciPassing === true, AND a structured ciProof object demonstrating allPassing === true
@@ -95,10 +92,11 @@ export function transitionTaskState(
       options.reviewClean !== true ||
       options.testsPass !== true ||
       options.ciPassing !== true ||
+      options.liveVerificationPassed !== true ||
       !isCiProofValid
     ) {
       throw new Error(
-        'Cannot transition to AWAITING_HUMAN_APPROVAL: reviewClean, testsPass, ciPassing === true, and a structured ciProof object demonstrating allPassing === true must all be strictly provided and true (missing, false, or malformed fields rejected).'
+        'Cannot transition to AWAITING_HUMAN_APPROVAL: reviewClean, testsPass, ciPassing, and liveVerificationPassed must be true, and a structured ciProof object demonstrating allPassing === true must be provided (missing, false, or malformed fields rejected).'
       );
     }
   }

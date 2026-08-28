@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { MonitorAutoLauncher } from '../monitor/auto-launch.js';
 import { Orchestrator } from '../orchestrator/orchestrator.js';
 import type { IOrchestrator, OrchestratorMcpServerOptions } from '../types.js';
 import { redactSecrets } from '../utils/exec.js';
@@ -24,7 +25,7 @@ export interface McpErrorPayload {
 /**
  * Formats a successful MCP tool response as stable JSON text.
  */
-export function formatSuccessResponse<T>(data: T) {
+export function formatSuccessResponse<T>(data: T, monitor?: { url: string; opened: boolean }) {
   const payload: McpSuccessPayload<T> = {
     ok: true,
     data,
@@ -33,7 +34,7 @@ export function formatSuccessResponse<T>(data: T) {
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify(payload, null, 2),
+        text: JSON.stringify(monitor ? { ...payload, monitor } : payload, null, 2),
       },
     ],
   };
@@ -114,6 +115,27 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
     name: options.serverInfo?.name || MCP_SERVER_NAME,
     version: options.serverInfo?.version || MCP_SERVER_VERSION,
   });
+  const monitorLauncher =
+    options.monitorLauncher ||
+    new MonitorAutoLauncher({ stateDir: orchestrator.getStateDir?.() || '' });
+  const runWithMonitor = async <T>(operation: () => Promise<T>) => {
+    let monitor: { url: string; opened: boolean } | undefined;
+    try {
+      monitor = await monitorLauncher.ensureStarted();
+    } catch (error) {
+      // Monitoring must never prevent a task from safely returning its own state or diagnostics.
+      process.stderr.write(
+        `codex-anti-orchestrator monitor unavailable: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`
+      );
+    }
+    try {
+      return formatSuccessResponse(await operation(), monitor);
+    } catch (error) {
+      return formatErrorResponse(error);
+    }
+  };
 
   // 1. orchestrator_create_task (repoPath, prompt, optional baseBranch)
   server.registerTool(
@@ -145,18 +167,14 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
         })
         .strict(),
     },
-    async (args) => {
-      try {
-        const task = await orchestrator.createTask({
+    async (args) =>
+      runWithMonitor(async () =>
+        orchestrator.createTask({
           repoPath: args.repoPath,
           prompt: args.prompt,
           baseBranch: args.baseBranch,
-        });
-        return formatSuccessResponse(task);
-      } catch (error) {
-        return formatErrorResponse(error);
-      }
-    }
+        })
+      )
   );
 
   // 2. orchestrator_run_task (taskId)
@@ -174,14 +192,7 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
         })
         .strict(),
     },
-    async (args) => {
-      try {
-        const task = await orchestrator.runTaskLoop(args.taskId);
-        return formatSuccessResponse(task);
-      } catch (error) {
-        return formatErrorResponse(error);
-      }
-    }
+    async (args) => runWithMonitor(() => orchestrator.runTaskLoop(args.taskId))
   );
 
   // 3. orchestrator_get_task_status (taskId)
@@ -199,14 +210,7 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
         })
         .strict(),
     },
-    async (args) => {
-      try {
-        const task = await orchestrator.getTask(args.taskId);
-        return formatSuccessResponse(task);
-      } catch (error) {
-        return formatErrorResponse(error);
-      }
-    }
+    async (args) => runWithMonitor(() => orchestrator.getTask(args.taskId))
   );
 
   // 4. orchestrator_list_tasks (no arbitrary filters)
@@ -217,14 +221,7 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
         'Lists all orchestrated development tasks stored in the orchestrator state directory.',
       inputSchema: z.object({}).strict(),
     },
-    async () => {
-      try {
-        const tasks = await orchestrator.listTasks();
-        return formatSuccessResponse(tasks);
-      } catch (error) {
-        return formatErrorResponse(error);
-      }
-    }
+    async () => runWithMonitor(() => orchestrator.listTasks())
   );
 
   // 5. orchestrator_resume_task (taskId, optional guidance)
@@ -248,16 +245,12 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
         })
         .strict(),
     },
-    async (args) => {
-      try {
-        const task = await orchestrator.resumeTask(args.taskId, {
+    async (args) =>
+      runWithMonitor(() =>
+        orchestrator.resumeTask(args.taskId, {
           guidance: args.guidance,
-        });
-        return formatSuccessResponse(task);
-      } catch (error) {
-        return formatErrorResponse(error);
-      }
-    }
+        })
+      )
   );
 
   // 6. orchestrator_cancel_task (taskId, optional reason)
@@ -280,14 +273,8 @@ export function createOrchestratorMcpServer(options: OrchestratorMcpServerOption
         })
         .strict(),
     },
-    async (args) => {
-      try {
-        const task = await orchestrator.cancelTask(args.taskId, args.reason || 'Cancelled via MCP');
-        return formatSuccessResponse(task);
-      } catch (error) {
-        return formatErrorResponse(error);
-      }
-    }
+    async (args) =>
+      runWithMonitor(() => orchestrator.cancelTask(args.taskId, args.reason || 'Cancelled via MCP'))
   );
 
   return server;

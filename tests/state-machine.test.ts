@@ -65,12 +65,16 @@ describe('State Machine & Transitions', () => {
     task = transitionTaskState(task, 'REVIEW_EVALUATING');
     expect(task.state).toBe('REVIEW_EVALUATING');
 
-    // Clean review -> AWAITING_HUMAN_APPROVAL
+    task = transitionTaskState(task, 'AGY_VALIDATING');
+    expect(task.state).toBe('AGY_VALIDATING');
+
+    // Clean review plus passed live verification -> AWAITING_HUMAN_APPROVAL
     task = transitionTaskState(task, 'AWAITING_HUMAN_APPROVAL', {
       reviewClean: true,
       testsPass: true,
       ciPassing: true,
       ciProof: { allPassing: true },
+      liveVerificationPassed: true,
     });
     expect(task.state).toBe('AWAITING_HUMAN_APPROVAL');
 
@@ -113,14 +117,24 @@ describe('State Machine & Transitions', () => {
   it('should strictly reject AWAITING_HUMAN_APPROVAL when reviewClean, testsPass, ciPassing, or structured ciProof is missing, false, or malformed', () => {
     const makeTask = () => {
       const t = createInitialTask();
-      t.state = 'REVIEW_EVALUATING';
+      t.state = 'AGY_VALIDATING';
       return t;
     };
 
     // Missing all options
     expect(() => {
       transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {});
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
+
+    // Missing mandatory live verification proof
+    expect(() => {
+      transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
+        reviewClean: true,
+        testsPass: true,
+        ciPassing: true,
+        ciProof: { allPassing: true },
+      });
+    }).toThrow(/liveVerificationPassed/);
 
     // Missing testsPass
     expect(() => {
@@ -129,7 +143,7 @@ describe('State Machine & Transitions', () => {
         ciPassing: true,
         ciProof: { allPassing: true },
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // Missing reviewClean
     expect(() => {
@@ -138,7 +152,7 @@ describe('State Machine & Transitions', () => {
         ciPassing: true,
         ciProof: { allPassing: true },
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // Missing ciPassing alone (caller passes ciProof only)
     expect(() => {
@@ -147,7 +161,7 @@ describe('State Machine & Transitions', () => {
         testsPass: true,
         ciProof: { allPassing: true },
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // Missing ciProof alone (caller passes ciPassing only)
     expect(() => {
@@ -156,7 +170,7 @@ describe('State Machine & Transitions', () => {
         testsPass: true,
         ciPassing: true,
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // False reviewClean
     expect(() => {
@@ -166,7 +180,7 @@ describe('State Machine & Transitions', () => {
         ciPassing: true,
         ciProof: { allPassing: true },
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // False testsPass
     expect(() => {
@@ -176,7 +190,7 @@ describe('State Machine & Transitions', () => {
         ciPassing: true,
         ciProof: { allPassing: true },
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // False ciPassing
     expect(() => {
@@ -186,7 +200,7 @@ describe('State Machine & Transitions', () => {
         ciPassing: false,
         ciProof: { allPassing: true },
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // False ciProof object allPassing
     expect(() => {
@@ -196,7 +210,7 @@ describe('State Machine & Transitions', () => {
         ciPassing: true,
         ciProof: { allPassing: false },
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // Malformed ciProof: boolean instead of structured object
     expect(() => {
@@ -206,7 +220,7 @@ describe('State Machine & Transitions', () => {
         ciPassing: true,
         ciProof: true,
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // Malformed ciProof: null
     expect(() => {
@@ -216,7 +230,7 @@ describe('State Machine & Transitions', () => {
         ciPassing: true,
         ciProof: null,
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // Malformed ciProof: array
     expect(() => {
@@ -226,7 +240,7 @@ describe('State Machine & Transitions', () => {
         ciPassing: true,
         ciProof: [{ allPassing: true }],
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // Malformed ciProof: empty object (missing allPassing)
     expect(() => {
@@ -236,7 +250,7 @@ describe('State Machine & Transitions', () => {
         ciPassing: true,
         ciProof: {},
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // Malformed ciProof: non-boolean allPassing
     expect(() => {
@@ -246,7 +260,7 @@ describe('State Machine & Transitions', () => {
         ciPassing: true,
         ciProof: { allPassing: 'true' },
       });
-    }).toThrow(/reviewClean, testsPass, ciPassing === true, and a structured ciProof object/);
+    }).toThrow(/reviewClean, testsPass, ciPassing, and liveVerificationPassed/);
 
     // Valid proof with simple allPassing: true
     const okTask1 = transitionTaskState(makeTask(), 'AWAITING_HUMAN_APPROVAL', {
@@ -254,6 +268,7 @@ describe('State Machine & Transitions', () => {
       testsPass: true,
       ciPassing: true,
       ciProof: { allPassing: true },
+      liveVerificationPassed: true,
     });
     expect(okTask1.state).toBe('AWAITING_HUMAN_APPROVAL');
 
@@ -267,6 +282,7 @@ describe('State Machine & Transitions', () => {
         allPassing: true,
         checks: [{ name: 'ci/test', state: 'SUCCESS', bucket: 'pass' }],
       },
+      liveVerificationPassed: true,
     });
     expect(okTask2.state).toBe('AWAITING_HUMAN_APPROVAL');
   });

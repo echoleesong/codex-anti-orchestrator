@@ -22,6 +22,7 @@ export function parseCodexReviewOutput(rawOutput: string): CodexReviewResult {
     summary: 'Codex review output was empty, missing, or malformed. Failing safe to human review.',
     blockingIssues: [],
     warnings: [],
+    humanVerificationChecklist: [],
     parsedCleanly: false,
     rawOutput: rawOutput || '',
   };
@@ -103,6 +104,7 @@ export function parseCodexReviewOutput(rawOutput: string): CodexReviewResult {
       summary: `Invalid or missing review verdict ("${String(obj.verdict)}"). Failing safe to NEEDS_USER_DECISION.`,
       blockingIssues: [],
       warnings: [],
+      humanVerificationChecklist: [],
       parsedCleanly: false,
       rawOutput,
     };
@@ -129,10 +131,33 @@ export function parseCodexReviewOutput(rawOutput: string): CodexReviewResult {
         warnings: Array.isArray(obj.warnings)
           ? obj.warnings.map((w) => (typeof w === 'string' ? w : JSON.stringify(w))).filter(Boolean)
           : [],
+        humanVerificationChecklist: [],
         parsedCleanly: false,
         rawOutput,
       };
     }
+  }
+
+  const rawChecklist = obj.humanVerificationChecklist || obj.human_verification_checklist || [];
+  const humanVerificationChecklist: string[] = Array.isArray(rawChecklist)
+    ? rawChecklist
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter(Boolean)
+        .slice(0, 12)
+    : [];
+
+  // A clean PR must include review-authored, concrete checks for the human handoff.
+  if (normalizedVerdict === 'APPROVE' && humanVerificationChecklist.length === 0) {
+    return {
+      verdict: 'NEEDS_USER_DECISION',
+      summary:
+        'Invalid APPROVE review payload: humanVerificationChecklist must contain at least one concrete live verification item. Failing safe to human review.',
+      blockingIssues: [],
+      warnings: [],
+      humanVerificationChecklist: [],
+      parsedCleanly: false,
+      rawOutput,
+    };
   }
 
   // Extract blocking issues
@@ -157,6 +182,7 @@ export function parseCodexReviewOutput(rawOutput: string): CodexReviewResult {
     summary,
     blockingIssues: normalizedVerdict === 'APPROVE' ? [] : blockingIssues,
     warnings,
+    humanVerificationChecklist,
     parsedCleanly: true,
     rawOutput,
   };
@@ -194,13 +220,15 @@ export function buildCodexReviewPrompt(
     '  "verdict": "APPROVE" | "CHANGES_REQUIRED" | "NEEDS_USER_DECISION",',
     '  "summary": "<Concise summary of review findings>",',
     '  "blockingIssues": ["<list of any blocking security, functional, or stability issues>"],',
-    '  "warnings": ["<list of non-blocking suggestions, stylistic notes, or warnings>"]',
+    '  "warnings": ["<list of non-blocking suggestions, stylistic notes, or warnings>"],',
+    '  "humanVerificationChecklist": ["<concrete behavior a human should verify in the running local application>"]',
     '}',
     '```',
     'Verdict Criteria:',
     '- APPROVE: Code is clean, well-tested, adheres to architecture, and has zero blocking issues.',
     '- CHANGES_REQUIRED: Code contains bugs, test failures, security flaws, or defects that can be automatically fixed.',
-    '- NEEDS_USER_DECISION: Ambiguity, architectural tradeoffs, or conflicting requirements require human decision.'
+    '- NEEDS_USER_DECISION: Ambiguity, architectural tradeoffs, or conflicting requirements require human decision.',
+    '- For APPROVE, humanVerificationChecklist must contain one or more specific, observable checks tailored to the changed behavior. These checks will be run by Anti in a localhost development environment and shown to the human before merge.'
   );
 
   return lines.join('\n');
@@ -242,6 +270,7 @@ export class CodexAdapter {
         summary: `Codex review execution error (exit code ${execResult.exitCode}): ${execResult.stderr.trim() || execResult.stdout.trim() || execResult.error?.message || 'Unknown error'}`,
         blockingIssues: [],
         warnings: [],
+        humanVerificationChecklist: [],
         parsedCleanly: false,
         rawOutput: execResult.stdout || execResult.stderr,
       };
