@@ -16,11 +16,11 @@ import type {
 describe('MCP Server Tool & Safety Boundary Tests', () => {
   const sampleTaskRecord: TaskRecord = {
     id: 'task-1740000000-implement-auth-ab12cd',
-    targetRepoPath: '/Users/lisong/code/my-project',
+    targetRepoPath: '/Users/example/projects/my-project',
     baseBranch: 'main',
     taskBranch: 'anti/task-1740000000-implement-auth-ab12cd',
     worktreePath:
-      '/Users/lisong/.codex-anti-orchestrator/worktrees/task-1740000000-implement-auth-ab12cd',
+      '/Users/example/.codex-anti-orchestrator/worktrees/task-1740000000-implement-auth-ab12cd',
     state: 'WORKTREE_READY',
     createdAt: '2026-08-27T12:00:00.000Z',
     updatedAt: '2026-08-27T12:00:00.000Z',
@@ -111,8 +111,8 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
         id: taskId,
         state: 'AGY_FIXING' as const,
       })),
-      getStateDir: vi.fn(() => '/Users/lisong/.codex-anti-orchestrator/worktrees'),
-      getAllowedBaseDir: vi.fn(() => '/Users/lisong/code'),
+      getStateDir: vi.fn(() => '/Users/example/.codex-anti-orchestrator/worktrees'),
+      getAllowedBaseDir: vi.fn(() => '/Users/example/projects'),
       configureAllowedBaseDir: vi.fn((allowedBaseDir: string) => ({
         allowedBaseDir,
         confirmedAt: '2026-08-28T00:00:00.000Z',
@@ -231,7 +231,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       const res = await client.callTool({
         name: 'orchestrator_create_task',
         arguments: {
-          repoPath: '/Users/lisong/code/my-project',
+          repoPath: '/Users/example/projects/my-project',
           prompt: 'Implement secure JWT authentication',
         },
       });
@@ -245,10 +245,10 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       expect(parsed.monitor).toEqual({ url: 'http://127.0.0.1:4390', opened: true });
       expect(parsed.data.id).toBe(sampleTaskRecord.id);
       expect(parsed.data.prompt).toBe('Implement secure JWT authentication');
-      expect(parsed.data.targetRepoPath).toBe('/Users/lisong/code/my-project');
+      expect(parsed.data.targetRepoPath).toBe('/Users/example/projects/my-project');
 
       expect(mockOrchestrator.createTask).toHaveBeenCalledWith({
-        repoPath: '/Users/lisong/code/my-project',
+        repoPath: '/Users/example/projects/my-project',
         prompt: 'Implement secure JWT authentication',
         baseBranch: undefined,
       });
@@ -258,7 +258,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       const res = await client.callTool({
         name: 'orchestrator_create_task',
         arguments: {
-          repoPath: '/Users/lisong/code/my-project',
+          repoPath: '/Users/example/projects/my-project',
           prompt: 'Refactor database adapter',
           baseBranch: 'develop',
         },
@@ -268,7 +268,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       const parsed = JSON.parse((res.content[0] as { type: 'text'; text: string }).text);
       expect(parsed.ok).toBe(true);
       expect(mockOrchestrator.createTask).toHaveBeenCalledWith({
-        repoPath: '/Users/lisong/code/my-project',
+        repoPath: '/Users/example/projects/my-project',
         prompt: 'Refactor database adapter',
         baseBranch: 'develop',
       });
@@ -276,7 +276,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
 
     it('should map orchestrator errors to structured tool error result with safe code and message', async () => {
       vi.mocked(mockOrchestrator.createTask).mockRejectedValueOnce(
-        new Error('Invalid target repository path: path resolves outside /Users/lisong/code')
+        new Error('Invalid target repository path: path resolves outside /Users/example/projects')
       );
 
       const res = await client.callTool({
@@ -292,7 +292,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       expect(parsed.ok).toBe(false);
       expect(parsed.error.code).toBe('INVALID_PATH');
       expect(parsed.error.message).toContain('Invalid target repository path');
-      expect(parsed.error.message).toContain('/Users/lisong/code');
+      expect(parsed.error.message).toContain('/Users/example/projects');
     });
 
     it('should map non-Error exception to stringified tool error result', async () => {
@@ -303,7 +303,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       const res = await client.callTool({
         name: 'orchestrator_create_task',
         arguments: {
-          repoPath: '/Users/lisong/code/my-project',
+          repoPath: '/Users/example/projects/my-project',
           prompt: 'Fix bug',
         },
       });
@@ -317,14 +317,14 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
 
     it('should redact secrets in error response and omit raw stack traces', async () => {
       const errWithStack = new Error(
-        'Failed to connect with token ghp_1234567890abcdef1234567890abcdef1234\n    at Object.createTask (/Users/lisong/code/src/secret.ts:42:15)'
+        'Failed to connect with token ghp_1234567890abcdef1234567890abcdef1234\n    at Object.createTask (/Users/example/projects/src/secret.ts:42:15)'
       );
       vi.mocked(mockOrchestrator.createTask).mockRejectedValueOnce(errWithStack);
 
       const res = await client.callTool({
         name: 'orchestrator_create_task',
         arguments: {
-          repoPath: '/Users/lisong/code/my-project',
+          repoPath: '/Users/example/projects/my-project',
           prompt: 'Fix bug',
         },
       });
@@ -368,7 +368,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       const res = await client.callTool({
         name: 'orchestrator_create_task',
         arguments: {
-          repoPath: '/Users/lisong/code/my-project',
+          repoPath: '/Users/example/projects/my-project',
         } as unknown as Record<string, unknown>,
       });
 
@@ -381,7 +381,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       const res = await client.callTool({
         name: 'orchestrator_create_task',
         arguments: {
-          repoPath: '/Users/lisong/code/my-project',
+          repoPath: '/Users/example/projects/my-project',
           prompt: '',
         },
       });
@@ -395,7 +395,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       const res = await client.callTool({
         name: 'orchestrator_create_task',
         arguments: {
-          repoPath: '/Users/lisong/code/my-project',
+          repoPath: '/Users/example/projects/my-project',
           prompt: 'Feature',
           baseBranch: '',
         },
@@ -410,7 +410,7 @@ describe('MCP Server Tool & Safety Boundary Tests', () => {
       const res = await client.callTool({
         name: 'orchestrator_create_task',
         arguments: {
-          repoPath: '/Users/lisong/code/my-project',
+          repoPath: '/Users/example/projects/my-project',
           prompt: 'Implement feature',
           maliciousFlag: '--dangerously-skip-permissions',
         } as unknown as Record<string, unknown>,

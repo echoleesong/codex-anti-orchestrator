@@ -75,7 +75,7 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
         calls.push([file, ...args]);
         return {
           exitCode: 0,
-          stdout: 'https://github.com/echoleesong/codex-anti-orchestrator/pull/42\n',
+          stdout: 'https://github.com/example-owner/example-repo/pull/42\n',
           stderr: '',
         };
       };
@@ -90,7 +90,7 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
       });
 
       expect(res.success).toBe(true);
-      expect(res.prUrl).toBe('https://github.com/echoleesong/codex-anti-orchestrator/pull/42');
+      expect(res.prUrl).toBe('https://github.com/example-owner/example-repo/pull/42');
       expect(res.prNumber).toBe(42);
       expect(calls[0]).toEqual([
         'gh',
@@ -115,7 +115,7 @@ describe('GitHub PR Adapter & Safety Boundaries', () => {
           title: 'feat: add user profile API',
           body: 'PR Body',
           state: 'OPEN',
-          url: 'https://github.com/echoleesong/codex-anti-orchestrator/pull/42',
+          url: 'https://github.com/example-owner/example-repo/pull/42',
         }),
         stderr: '',
       });

@@ -29,34 +29,28 @@ describe('Doctor Diagnostic Checks', () => {
 
   describe('isValidGitHubRemoteUrl', () => {
     it('should accept valid GitHub HTTPS URLs', () => {
-      expect(
-        isValidGitHubRemoteUrl('https://github.com/echoleesong/codex-anti-orchestrator.git')
-      ).toBe(true);
-      expect(isValidGitHubRemoteUrl('https://github.com/echoleesong/codex-anti-orchestrator')).toBe(
+      expect(isValidGitHubRemoteUrl('https://github.com/example-owner/example-repo.git')).toBe(
         true
       );
+      expect(isValidGitHubRemoteUrl('https://github.com/example-owner/example-repo')).toBe(true);
       expect(isValidGitHubRemoteUrl('https://www.github.com/org-name/repo_name.git')).toBe(true);
     });
 
     it('should accept valid GitHub SSH URLs', () => {
-      expect(isValidGitHubRemoteUrl('git@github.com:echoleesong/codex-anti-orchestrator.git')).toBe(
+      expect(isValidGitHubRemoteUrl('git@github.com:example-owner/example-repo.git')).toBe(true);
+      expect(isValidGitHubRemoteUrl('git@github.com:example-owner/example-repo')).toBe(true);
+      expect(isValidGitHubRemoteUrl('ssh://git@github.com/example-owner/example-repo.git')).toBe(
         true
       );
-      expect(isValidGitHubRemoteUrl('git@github.com:echoleesong/codex-anti-orchestrator')).toBe(
+      expect(isValidGitHubRemoteUrl('ssh://git@github.com:22/example-owner/example-repo.git')).toBe(
         true
       );
-      expect(
-        isValidGitHubRemoteUrl('ssh://git@github.com/echoleesong/codex-anti-orchestrator.git')
-      ).toBe(true);
-      expect(
-        isValidGitHubRemoteUrl('ssh://git@github.com:22/echoleesong/codex-anti-orchestrator.git')
-      ).toBe(true);
     });
 
     it('should reject non-GitHub or invalid URLs', () => {
       expect(isValidGitHubRemoteUrl('https://gitlab.com/user/repo.git')).toBe(false);
       expect(isValidGitHubRemoteUrl('https://bitbucket.org/user/repo.git')).toBe(false);
-      expect(isValidGitHubRemoteUrl('/Users/lisong/code/local-repo')).toBe(false);
+      expect(isValidGitHubRemoteUrl('/Users/example/projects/local-repo')).toBe(false);
       expect(isValidGitHubRemoteUrl('file:///path/to/repo')).toBe(false);
       expect(isValidGitHubRemoteUrl('not-a-url')).toBe(false);
       expect(isValidGitHubRemoteUrl('')).toBe(false);
@@ -79,16 +73,14 @@ describe('Doctor Diagnostic Checks', () => {
         'git rev-parse --is-inside-work-tree': { stdout: 'true\n' },
         'git rev-parse --abbrev-ref HEAD': { stdout: 'main\n' },
         'git remote get-url origin': {
-          stdout: 'https://github.com/echoleesong/codex-anti-orchestrator.git\n',
+          stdout: 'https://github.com/example-owner/example-repo.git\n',
         },
       });
 
       const result = await checkGit(mock, '/fake/path');
       expect(result.status).toBe('ok');
       expect(result.message).toContain('main');
-      expect(result.message).toContain(
-        'https://github.com/echoleesong/codex-anti-orchestrator.git'
-      );
+      expect(result.message).toContain('https://github.com/example-owner/example-repo.git');
     });
 
     it('should return error when git is not installed', async () => {
@@ -243,7 +235,7 @@ describe('Doctor Diagnostic Checks', () => {
         'git rev-parse --is-inside-work-tree': { stdout: 'true\n' },
         'git rev-parse --abbrev-ref HEAD': { stdout: 'main\n' },
         'git remote get-url origin': {
-          stdout: 'https://github.com/echoleesong/codex-anti-orchestrator.git\n',
+          stdout: 'https://github.com/example-owner/example-repo.git\n',
         },
         'gh --version': { stdout: 'gh version 2.45.0\n' },
         'gh auth status': { stdout: 'Logged in to github.com account testuser\n' },
@@ -269,7 +261,7 @@ describe('Doctor Diagnostic Checks', () => {
         'git rev-parse --is-inside-work-tree': { stdout: 'true\n' },
         'git rev-parse --abbrev-ref HEAD': { stdout: 'main\n' },
         'git remote get-url origin': {
-          stdout: 'https://github.com/echoleesong/codex-anti-orchestrator.git\n',
+          stdout: 'https://github.com/example-owner/example-repo.git\n',
         },
         'gh --version': { stdout: 'gh version 2.45.0\n' },
         'gh auth status': { exitCode: 1, stderr: 'unauthenticated' },
@@ -292,7 +284,11 @@ describe('Doctor Diagnostic Checks', () => {
       const spyExecutor: CommandExecutor = async (file, args) => {
         const cmd = `${file} ${args.join(' ')}`;
         executedCommands.push(cmd);
-        return { exitCode: 0, stdout: 'https://github.com/echoleesong/repo.git', stderr: '' };
+        return {
+          exitCode: 0,
+          stdout: 'https://github.com/example-owner/example-repo.git',
+          stderr: '',
+        };
       };
 
       await runDoctor({ executor: spyExecutor, cwd: '/test' });

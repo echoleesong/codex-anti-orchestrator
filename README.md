@@ -2,6 +2,8 @@
 
 > **Local Orchestrator for Codex Review, Antigravity Development, and GitHub PR Handoff.**
 
+**[中文文档](README.zh-CN.md)**
+
 `codex-anti-orchestrator` is a lightweight, local-first orchestration daemon designed to bridge **Codex App (MCP)**, **Antigravity CLI (`agy`)**, **GitHub Pull Requests**, and **OpenAI Codex CLI (`codex`)** into a structured, secure, and human-supervised automated development loop.
 
 ---
