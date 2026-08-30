@@ -21,12 +21,30 @@ flowchart LR
     V --> H[等待人工核验与合并]
 ```
 
+## 组件职责与边界
+
+| 组件 | 职责 | 约束与权限 |
+| :-- | :-- | :-- |
+| **Codex App MCP** | 接收你的开发目标，创建、运行、查询和恢复协作任务。 | 只发送结构化任务请求，不直接修改项目文件。首次使用必须先获得你对允许目录的明确确认。 |
+| **本地协调器** | 管理状态机、隔离 worktree、修复轮数和安全校验。 | 仅在本机运行；不安装 root/launchd 服务；不持久化凭据。 |
+| **Antigravity CLI (`agy`)** | 在隔离 worktree 中实现功能、补充测试和修复审查问题。 | 使用受限的非交互调用；禁止 `--dangerously-skip-permissions` 等绕过权限的参数。 |
+| **GitHub Pull Request** | 提供变更交接、CI 状态和人工审查记录。 | 仅用于 PR 元数据、分支推送和 CI 查询；不允许自动合并。 |
+| **Codex CLI (`codex`)** | 对 PR 差异进行自动化静态和语义审查。 | 始终处于只读沙箱；不能改文件、提交、推送或合并。 |
+
 核心原则：
 
 - Anti 只在目标仓库外的隔离 Git worktree 中工作，不直接修改你的主工作区。
 - Codex CLI 以只读沙箱审查差异，不提交代码、不推送、更不会合并 PR。
 - 自动化流程可以创建、更新 PR 并迭代修复；**不会自动合并、部署、发布或绕过分支保护**。
 - 监控页仅监听 `127.0.0.1`，只读展示任务、审查、CI 和本地验证状态。
+
+## 明确不做的事
+
+- **不自动合并或部署**：合并到 `main` 和生产部署必须由人明确批准。
+- **不修改主工作区**：协调器在目标仓库外建立 Git worktree，主工作区保持不受任务修改影响。
+- **不绕过权限与沙箱**：不会使用危险的权限跳过参数。
+- **不依赖云端协调服务**：协调逻辑在你的机器上运行；GitHub 仅承担 PR 和 CI 协作。
+- **不把凭据写入仓库**：Token、API Key 和本机配置不得提交、记录或嵌入代码。
 
 ## 前置条件
 
@@ -41,7 +59,8 @@ flowchart LR
 克隆并安装依赖：
 
 ```bash
-git clone https://github.com/example-owner/example-repo.git
+# 在 GitHub 仓库页面通过 Code → HTTPS 复制实际克隆地址
+git clone <repository-url>
 cd codex-anti-orchestrator
 npm install
 npm run build
@@ -144,6 +163,15 @@ MCP 暴露的工具只有：
 7. `orchestrator_cancel_task`：中止任务并保留 worktree。
 
 MCP 不提供风险放行、任意命令执行、合并、自动合并、部署、发布或工作流触发工具。
+
+## 运行时安全与控制
+
+1. **安全的子进程调用**：所有 `git`、`gh`、`agy` 与 `codex` 命令均使用参数数组调用，不拼接 shell 命令；执行有超时和输出大小限制，日志会脱敏 GitHub Token、OpenAI/Anthropic Key、Bearer Token 和 URL 密码。
+2. **Anti 开发适配器**：只接受已校验的模型和超时参数，在外部 worktree 中以 `--sandbox`、`--mode accept-edits`、`--print` 运行；每一轮调用都是带完整上下文的无状态执行。
+3. **Codex 审查适配器**：使用 `codex exec --sandbox read-only`。审查结论只能是 `APPROVE`、`CHANGES_REQUIRED` 或 `NEEDS_USER_DECISION`；缺失、空白或无法解析的输出会安全地降级为需要人工决策。
+4. **GitHub PR 适配器**：仅允许创建、查看、更新 PR 和查询检查状态；禁止 merge、workflow dispatch、release、deploy、publish 等操作，也禁止直接推送到受保护分支。
+5. **受控状态循环**：修复轮数默认最多 3 轮。每次状态流转、审查摘要和错误诊断都会保留；失败、人工决策和人工核验阶段的 worktree 会保留以供检查。
+6. **有界 CI 等待与本机可观测性**：CI pending 会在有限次数内轮询，不会无限等待。监控页只读、仅 localhost 访问，事件内容经过长度限制和凭据脱敏。
 
 ## 安全与人工验收
 
