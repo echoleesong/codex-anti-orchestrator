@@ -125,7 +125,7 @@ describe('Controlled State-Loop Execution & Transitions', () => {
         if (args.includes('create')) {
           return {
             exitCode: 0,
-            stdout: 'https://github.com/echoleesong/codex-anti-orchestrator/pull/99\n',
+            stdout: 'https://github.com/example-owner/example-repo/pull/99\n',
             stderr: '',
           };
         }

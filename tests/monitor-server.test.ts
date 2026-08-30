@@ -32,7 +32,7 @@ describe('local monitor HTTP server', () => {
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'monitor-test-'));
     task = {
       id: 'task-123-monitor-abcdef',
-      targetRepoPath: '/Users/lisong/code/example',
+      targetRepoPath: '/Users/example/projects/example',
       baseBranch: 'main',
       taskBranch: 'anti/task-123-monitor-abcdef',
       worktreePath: '/safe/external/worktree',

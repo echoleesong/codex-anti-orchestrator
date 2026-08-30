@@ -66,6 +66,25 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
     expect(loaded.state).toBe('WORKTREE_READY');
   });
 
+  it('requires a confirmed allowed base before the first task and persists it after confirmation', async () => {
+    const unconfigured = new Orchestrator({ stateDir: tempStateDir });
+    await expect(
+      unconfigured.createTask({
+        repoPath: testRepoPath,
+        prompt: 'First task requires confirmation',
+      })
+    ).rejects.toThrow(/Allowed base directory is not configured/);
+
+    const confirmed = unconfigured.configureAllowedBaseDir(tempBaseDir);
+    expect(confirmed.allowedBaseDir).toBe(fs.realpathSync(tempBaseDir));
+
+    const task = await unconfigured.createTask({
+      repoPath: testRepoPath,
+      prompt: 'Task after base confirmation',
+    });
+    expect(task.state).toBe('WORKTREE_READY');
+  });
+
   it('should reject task creation if stateDir is inside the target repository', async () => {
     const inRepoStateDir = path.join(testRepoPath, '.orch-state');
     const badOrchestrator = new Orchestrator({
@@ -203,7 +222,7 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
   });
 
   describe('CLI Command Invariants', () => {
-    it('should strictly reject create command for repositories outside /Users/lisong/code in production mode', async () => {
+    it('should require explicit allowed-directory confirmation before CLI task creation', async () => {
       const env = {
         ...process.env,
         CODEX_ORCHESTRATOR_STATE_DIR: tempStateDir,
@@ -224,11 +243,11 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
           ],
           { env }
         );
-        expect.unreachable('CLI should have rejected repository outside /Users/lisong/code');
+        expect.unreachable('CLI should have required allowed-directory confirmation');
       } catch (err: unknown) {
         const execErr = err as { code?: number; stderr?: string };
         expect(execErr.code).toBe(1);
-        expect(execErr.stderr).toContain('must reside strictly within /Users/lisong/code');
+        expect(execErr.stderr).toContain('Allowed base directory is not configured');
       }
     });
 

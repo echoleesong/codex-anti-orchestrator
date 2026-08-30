@@ -109,6 +109,32 @@ async function main() {
       break;
     }
 
+    case 'configure': {
+      const allowedBaseDir = parseArgValue(rawArgs, '--allowed-base');
+      const confirmed = rawArgs.includes('--confirm');
+      if (!allowedBaseDir || !confirmed) {
+        process.stderr.write(
+          'Error: Usage: orchestrator configure --allowed-base <absolute-directory> --confirm\n'
+        );
+        process.exit(1);
+      }
+      try {
+        const config = orchestrator.configureAllowedBaseDir(allowedBaseDir);
+        if (isJson) {
+          process.stdout.write(`${JSON.stringify(config, null, 2)}\n`);
+        } else {
+          process.stdout.write(`✓ Allowed repository root confirmed: ${config.allowedBaseDir}\n`);
+        }
+        process.exit(0);
+      } catch (err) {
+        process.stderr.write(
+          `Failed to configure allowed repository root: ${err instanceof Error ? err.message : String(err)}\n`
+        );
+        process.exit(1);
+      }
+      break;
+    }
+
     case 'status': {
       const taskId = nonFlagArgs[1] || parseArgValue(rawArgs, '--id');
       const showAll = rawArgs.includes('--all') || rawArgs.includes('-a');
@@ -286,6 +312,8 @@ USAGE:
 
 COMMANDS:
   doctor                               Run read-only prerequisite and environment diagnostics
+  configure --allowed-base <path> --confirm
+                                       Confirm the local directory tree permitted for target repositories
   create --repo <path> --prompt <p>    Initialize task, validate cleanliness, create external worktree
   run <taskId>                         Execute the development, PR, and review state loop
   monitor [--port <port>]              Serve the local read-only task monitor on localhost
@@ -297,7 +325,7 @@ COMMANDS:
 
 OPTIONS:
   --json, -j                           Output result as clean JSON
-  --repo, -r <path>                    Target repository path (must reside in /Users/lisong/code)
+  --repo, -r <path>                    Target repository path (must reside in the confirmed allowed directory)
   --prompt, -p <text>                  Development task prompt / instructions
   --base, -b <branch>                  Base branch for worktree (defaults to HEAD branch)
   --override                           Acknowledge and override review warnings in NEEDS_USER_DECISION

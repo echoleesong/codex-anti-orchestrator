@@ -9,7 +9,7 @@ This document defines the security boundaries, operational constraints, and safe
 1. **Defense in Depth**: Every automated component operates under the principle of least privilege.
 2. **Strict Human Gatekeeping**: Automated agents may produce, test, and review code, but only human operators may approve merges or trigger deployments.
 3. **External Workspace & State Isolation**: Tasks, runtime state (`state.json`), and temporary Git worktrees must be located strictly outside the target repository to avoid polluting the host workspace.
-4. **Strict Repository Boundaries**: Production daemon strictly enforces that target repositories reside exclusively under `/Users/lisong/code`.
+4. **Strict Repository Boundaries**: Target repositories must reside strictly within a local directory explicitly confirmed by the user on that machine.
 5. **Zero Secret Persistence**: Authentication credentials, personal access tokens, and sensitive machine configurations must never be persisted in repository files or build artifacts.
 
 ---
@@ -23,10 +23,13 @@ This document defines the security boundaries, operational constraints, and safe
 - **Zero In-Repo Pollution**: The target repository directory remains clean, with no temporary subdirectories, untracked generated files, or local Git lock contention.
 - **State Preservation**: When a task enters `AWAITING_HUMAN_APPROVAL`, `NEEDS_USER_DECISION`, `AWAITING_HUMAN_OVERRIDE`, or `FAILED`, the worktree is preserved in the state directory for inspection and debugging before explicit cleanup on `COMPLETED` or `ABORTED`.
 
-### 2.2 Production Target Path Confinement
+### 2.2 Confirmed Target Path Confinement
 
-- **Allowed Base Directory**: The CLI strictly enforces that target repositories must reside within `/Users/lisong/code` project subdirectories.
-- **Traversal Protection**: Relative paths with `..`, root path attempts, and symlinks resolving outside `/Users/lisong/code` are halted with permission denial errors.
+- **First-Use Confirmation**: No repository parent directory is allowed by default. Before the first task on a machine, Codex must ask the user to confirm one exact absolute directory; only then may the CLI or MCP configuration command persist it.
+- **Local Configuration**: The confirmed canonical path and confirmation timestamp are stored only in the local orchestrator state directory as `allowed-base.json` (normally `~/.codex-anti-orchestrator/allowed-base.json`). The setting is intentionally machine-local, so a second machine requires its own confirmation.
+- **Allowed Base Directory**: Target repositories must be strict subdirectories of the confirmed directory. The filesystem root and the entire home directory are rejected as overly broad selections.
+- **Traversal Protection**: Relative paths, base-directory-as-target attempts, and symlinks resolving outside the confirmed directory are halted with permission denial errors after canonical `realpath` validation.
+- **Fail Closed**: If there is no valid confirmed configuration, task creation stops before any worktree or agent action and returns a suggested repository parent for user confirmation.
 
 ### 2.3 Git Lockfile Safety
 
@@ -106,7 +109,7 @@ This document defines the security boundaries, operational constraints, and safe
 | Threat                                            | Impact                                      | Mitigation Enforced                                                                                                                   |
 | :------------------------------------------------ | :------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------ |
 | **Agent hallucinating destructive shell command** | Loss of local files or workspace corruption | Argument arrays only (`shell: false`) + external worktree isolation + prohibition of bypass flags (`--dangerously-skip-permissions`). |
-| **Target repository path traversal**              | Unauthorized repository modification        | Strict confinement to `/Users/lisong/code` + realpath canonical validation.                                                           |
+| **Target repository path traversal**              | Unauthorized repository modification        | Strict confinement to a user-confirmed local directory + realpath canonical validation.                                               |
 | **Git lock race condition / corruption**          | Corrupted git index or repository loss      | Fast-fail lock detection with explicit prohibition of automatic lockfile deletion.                                                    |
 | **Accidental secret leak in stdout / logs**       | Exposed API tokens or GitHub credentials    | Strict `.gitignore`, automated multi-pattern secret scrubbing in process streams, and no token persistence in codebase.               |
 | **Unintended code merge to production**           | Defective code shipped to users             | Hard block on automatic merge commands; mandatory human PR approval gate; protected branch push shield.                               |

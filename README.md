@@ -2,6 +2,8 @@
 
 > **Local Orchestrator for Codex Review, Antigravity Development, and GitHub PR Handoff.**
 
+**[中文文档](README.zh-CN.md)**
+
 `codex-anti-orchestrator` is a lightweight, local-first orchestration daemon designed to bridge **Codex App (MCP)**, **Antigravity CLI (`agy`)**, **GitHub Pull Requests**, and **OpenAI Codex CLI (`codex`)** into a structured, secure, and human-supervised automated development loop.
 
 ---
@@ -102,24 +104,28 @@ npm run doctor -- --json
 ### Orchestrator CLI Commands
 
 ```bash
-# 1. Initialize a new development task and allocate external worktree
-npx tsx src/cli.ts create --repo /Users/lisong/code/my-project --prompt "Implement user auth"
+# 1. First use on each machine: explicitly confirm the directory tree that may contain target repositories.
+# Choose a narrow project container, not your whole home directory.
+npx tsx src/cli.ts configure --allowed-base /absolute/path/to/projects --confirm
 
-# 2. Run the automated development, PR, and review state loop
+# 2. Initialize a new development task and allocate an external worktree
+npx tsx src/cli.ts create --repo /absolute/path/to/projects/my-project --prompt "Implement user auth"
+
+# 3. Run the automated development, PR, and review state loop
 npx tsx src/cli.ts run <taskId>
 
-# 3. Check status of a specific task or list all tasks
+# 4. Check status of a specific task or list all tasks
 npx tsx src/cli.ts status <taskId>
 npx tsx src/cli.ts status --all
 
-# 4. Resume a task with human override or additional guidance
+# 5. Resume a task with human override or additional guidance
 npx tsx src/cli.ts resume <taskId> --override
 npx tsx src/cli.ts resume <taskId> --guidance "Fix null pointer in session handler"
 
-# 5. Cancel an active task while preserving its worktree
+# 6. Cancel an active task while preserving its worktree
 npx tsx src/cli.ts cancel <taskId> --reason "User requested stop"
 
-# 6. Start the read-only local H5 monitor (localhost only)
+# 7. Start the read-only local H5 monitor (localhost only)
 npx tsx src/cli.ts monitor
 # Optional explicit port
 npx tsx src/cli.ts monitor --port 4390
@@ -128,6 +134,12 @@ npx tsx src/cli.ts monitor --port 4390
 The monitor refreshes task state every three seconds and displays task progress, state transitions, PR links, local-test and review status, bounded CI polling observations, Codex's human-verification checklist, Anti's localhost verification evidence, and a redacted agent-event feed. It has no mutation, merge, or deployment controls and is reachable only at `http://127.0.0.1:<port>`.
 
 When any MCP tool is called, the MCP process starts this same read-only monitor automatically and opens it in the local browser once. It prefers `http://127.0.0.1:4390`; if that loopback port is already occupied, it safely selects the next available port and reports the URL in the MCP response.
+
+### First-Use Allowed Directory Confirmation
+
+The **allowed directory** is the local directory tree in which the orchestrator may access target repositories. It is a safety boundary: task creation rejects repositories outside this tree, including paths that escape through symbolic links. This keeps an incorrect task path or an agent mistake from reaching unrelated repositories, personal files, or system locations.
+
+On a new machine, no directory is trusted by default. If Codex first receives a task request, it will return a suggested parent directory and ask you to confirm the exact path. Only after your explicit confirmation can it call `orchestrator_configure_allowed_base`; the chosen canonical path and confirmation time are stored locally in `~/.codex-anti-orchestrator/allowed-base.json` (or the configured `CODEX_ORCHESTRATOR_STATE_DIR`). Choose the narrowest project container that covers the repositories you intend to orchestrate. The filesystem root and the entire home directory are rejected.
 
 ### Development & Testing
 
@@ -175,14 +187,15 @@ Replace `/absolute/path/to/codex-anti-orchestrator` with the absolute path to yo
 
 #### 3. Available MCP Tools
 
-The MCP server exposes strictly the following six authorized orchestration tools:
+The MCP server exposes strictly the following seven authorized orchestration tools:
 
-1. `orchestrator_create_task`: Validates target repository cleanliness and lockfile safety, and allocates an isolated external Git worktree for the task.
-2. `orchestrator_run_task`: Executes the automated development, GitHub PR creation, and Codex review state loop for a task.
-3. `orchestrator_get_task_status`: Retrieves current lifecycle state, transition history, and diagnostics for a specific task.
-4. `orchestrator_list_tasks`: Lists all development tasks tracked in the orchestrator state directory.
-5. `orchestrator_resume_task`: Resumes a task from `NEEDS_USER_DECISION` or `FAILED` state, supporting user guidance instructions (risk-acceptance override is strictly human-only via CLI).
-6. `orchestrator_cancel_task`: Cancels an active or pending task (`ABORTED`) while safely preserving the external worktree for inspection.
+1. `orchestrator_configure_allowed_base`: Persists the local allowed directory only after the user explicitly confirms its exact path; required before the first task on a machine.
+2. `orchestrator_create_task`: Validates target repository cleanliness and lockfile safety, and allocates an isolated external Git worktree for the task.
+3. `orchestrator_run_task`: Executes the automated development, GitHub PR creation, and Codex review state loop for a task.
+4. `orchestrator_get_task_status`: Retrieves current lifecycle state, transition history, and diagnostics for a specific task.
+5. `orchestrator_list_tasks`: Lists all development tasks tracked in the orchestrator state directory.
+6. `orchestrator_resume_task`: Resumes a task from `NEEDS_USER_DECISION` or `FAILED` state, supporting user guidance instructions (risk-acceptance override is strictly human-only via CLI).
+7. `orchestrator_cancel_task`: Cancels an active or pending task (`ABORTED`) while safely preserving the external worktree for inspection.
 
 #### 4. Safety & Tool Boundary Guarantees
 

@@ -301,7 +301,11 @@ export interface IOrchestrator {
   cancelTask(taskId: string, reason?: string): Promise<TaskRecord>;
   resumeTask(taskId: string, options?: ResumeTaskOptions): Promise<TaskRecord>;
   getStateDir?(): string;
-  getAllowedBaseDir?(): string;
+  getAllowedBaseDir?(): string | undefined;
+  configureAllowedBaseDir?(allowedBaseDir: string): {
+    allowedBaseDir: string;
+    confirmedAt: string;
+  };
 }
 
 export interface OrchestratorMcpServerOptions {

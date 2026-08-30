@@ -3,8 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const DEFAULT_ALLOWED_BASE_DIR = '/Users/lisong/code';
-
 export function getDefaultStateDir(): string {
   if (process.env.CODEX_ORCHESTRATOR_STATE_DIR) {
     return path.resolve(process.env.CODEX_ORCHESTRATOR_STATE_DIR);
@@ -18,13 +16,36 @@ export interface PathValidationResult {
   error?: string;
 }
 
+function isStrictChildPath(parentPath: string, candidatePath: string): boolean {
+  const relative = path.relative(parentPath, candidatePath);
+  return (
+    relative.length > 0 &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+function canonicalizeWithExistingAncestor(candidatePath: string): string {
+  let current = candidatePath;
+  const missingSegments: string[] = [];
+
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) return candidatePath;
+    missingSegments.unshift(path.basename(current));
+    current = parent;
+  }
+
+  return path.join(fs.realpathSync(current), ...missingSegments);
+}
+
 /**
- * Validates that a target repository path resides strictly inside the allowed base directory (/Users/lisong/code).
- * Production enforces /Users/lisong/code; testing environments can pass explicit allowedBaseDir parameter.
+ * Validates that a target repository path resides strictly inside a user-confirmed allowed base directory.
  */
 export function validateTargetRepoPath(
   targetPath: string,
-  allowedBaseDir: string = DEFAULT_ALLOWED_BASE_DIR
+  allowedBaseDir: string
 ): PathValidationResult {
   if (!targetPath || typeof targetPath !== 'string') {
     return {
@@ -43,6 +64,14 @@ export function validateTargetRepoPath(
     };
   }
 
+  if (!allowedBaseDir || typeof allowedBaseDir !== 'string' || !allowedBaseDir.trim()) {
+    return {
+      valid: false,
+      resolvedPath: path.resolve(rawTrimmed),
+      error: 'Allowed base directory is not configured. Confirm one before creating a task.',
+    };
+  }
+
   const resolvedAllowedBase = path.resolve(allowedBaseDir);
   const realAllowedBase = fs.existsSync(resolvedAllowedBase)
     ? fs.realpathSync(resolvedAllowedBase)
@@ -50,32 +79,22 @@ export function validateTargetRepoPath(
 
   const resolvedTarget = path.resolve(rawTrimmed);
 
-  // Reject paths equal to the allowed base directory itself
-  if (
-    resolvedTarget === resolvedAllowedBase ||
-    (fs.existsSync(resolvedTarget) && fs.realpathSync(resolvedTarget) === realAllowedBase)
-  ) {
+  const canonicalTarget = canonicalizeWithExistingAncestor(resolvedTarget);
+  if (canonicalTarget === realAllowedBase) {
+    return {
+      valid: false,
+      resolvedPath: canonicalTarget,
+      error: `Target path cannot be the root base directory itself (${realAllowedBase}). Must be a project subdirectory.`,
+    };
+  }
+  if (!isStrictChildPath(realAllowedBase, canonicalTarget)) {
     return {
       valid: false,
       resolvedPath: resolvedTarget,
-      error: `Target path cannot be the root base directory itself (${resolvedAllowedBase}). Must be a project subdirectory.`,
+      error: `Access denied: Target repository (${canonicalTarget}) must reside strictly within ${realAllowedBase}.`,
     };
   }
 
-  // Pre-check lexical path containment
-  const lexicalPrefix = resolvedAllowedBase.endsWith(path.sep)
-    ? resolvedAllowedBase
-    : `${resolvedAllowedBase}${path.sep}`;
-
-  if (!resolvedTarget.startsWith(lexicalPrefix)) {
-    return {
-      valid: false,
-      resolvedPath: resolvedTarget,
-      error: `Access denied: Target repository (${resolvedTarget}) must reside strictly within ${resolvedAllowedBase}.`,
-    };
-  }
-
-  // Verify existence and directory type
   try {
     if (!fs.existsSync(resolvedTarget)) {
       return {
@@ -87,15 +106,14 @@ export function validateTargetRepoPath(
 
     const realTarget = fs.realpathSync(resolvedTarget);
 
-    const realPrefix = realAllowedBase.endsWith(path.sep)
-      ? realAllowedBase
-      : `${realAllowedBase}${path.sep}`;
-
-    if (!realTarget.startsWith(realPrefix)) {
+    // Compare canonical paths rather than raw string prefixes. On macOS, /var commonly
+    // resolves to /private/var; canonical containment both supports that alias and rejects
+    // symlinks that escape the confirmed directory.
+    if (!isStrictChildPath(realAllowedBase, realTarget)) {
       return {
         valid: false,
         resolvedPath: realTarget,
-        error: `Symlink escape detected: real path (${realTarget}) is outside ${realAllowedBase}.`,
+        error: `Access denied: Target repository (${realTarget}) must reside strictly within ${realAllowedBase}.`,
       };
     }
 
