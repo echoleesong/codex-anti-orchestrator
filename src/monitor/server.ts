@@ -175,15 +175,15 @@ const HTML = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Codex + Anti Monitor</title>
+  <title>Codex + Anti 本机监控</title>
   <link rel="stylesheet" href="/assets/monitor.css">
 </head>
 <body>
   <main class="shell">
-    <header class="topbar"><div><p class="eyebrow">LOCAL ORCHESTRATION</p><h1>Codex + Anti</h1></div><p id="connection" class="connection">Connecting</p></header>
+    <header class="topbar"><div><p class="eyebrow">本机协作编排</p><h1>Codex + Anti 任务监控</h1></div><p id="connection" class="connection">正在连接</p></header>
     <section class="layout">
-      <aside class="task-panel"><h2>Tasks</h2><div id="tasks" class="task-list" aria-live="polite"></div></aside>
-      <section class="detail-panel"><div id="empty" class="empty">No task selected. Create a task to start monitoring.</div><div id="detail" hidden></div></section>
+      <aside class="task-panel"><h2>任务列表</h2><div id="tasks" class="task-list" aria-live="polite"></div></aside>
+      <section class="detail-panel"><div id="empty" class="empty">尚未选择任务。创建任务后将在此处显示监控信息。</div><div id="detail" hidden></div></section>
     </section>
   </main>
   <script src="/assets/monitor.js"></script>
@@ -196,10 +196,31 @@ const SCRIPT = `let selectedId;
 const tasks=document.querySelector('#tasks'),detail=document.querySelector('#detail'),empty=document.querySelector('#empty'),connection=document.querySelector('#connection');
 const text=value=>value==null?'':String(value);
 const esc=value=>text(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const stamp=value=>value?new Date(value).toLocaleString():'';
+const stamp=value=>value?new Date(value).toLocaleString('zh-CN'):'';
+const labels={IDLE:'空闲',INITIALIZING:'正在初始化',WORKTREE_PREPARING:'正在准备隔离工作区',WORKTREE_READY:'隔离工作区已就绪',AGY_DEVELOPING:'Anti 正在开发',PR_CREATING:'正在创建拉取请求',CODEX_REVIEWING:'Codex 正在审查',REVIEW_EVALUATING:'正在评估审查结果',AGY_VALIDATING:'Anti 正在本机验证',AGY_FIXING:'Anti 正在修复',PR_UPDATING:'正在更新拉取请求',AWAITING_HUMAN_APPROVAL:'等待人工核验',NEEDS_USER_DECISION:'需要人工决策',AWAITING_HUMAN_OVERRIDE:'等待人工风险放行',COMPLETED:'已完成',FAILED:'已失败',ABORTED:'已取消',APPROVE:'通过',CHANGES_REQUIRED:'需要修改',PASSED:'通过',PENDING:'等待中',PASSING:'通过中',FAILING:'失败',UNAVAILABLE:'不可用',ORCHESTRATOR:'协调器',ANTI:'Anti 开发',CODEX:'Codex 审查',GITHUB_CI:'GitHub CI'};
+const label=value=>labels[value]||text(value);
 const list=items=>'<ul class="checklist">'+items.map(item=>'<li>'+esc(item)+'</li>').join('')+'</ul>';
-async function loadTasks(){try{const response=await fetch('/api/tasks',{cache:'no-store'});if(!response.ok)throw new Error('Task list unavailable');const payload=await response.json();connection.textContent='Live local view';tasks.innerHTML=payload.tasks.map(task=>'<button class="task '+(task.id===selectedId?'selected':'')+'" data-id="'+esc(task.id)+'"><strong>'+esc(task.id)+'</strong><small class="status '+esc(task.state)+'">'+esc(task.state)+'</small><small>Updated '+esc(stamp(task.updatedAt))+'</small></button>').join('')||'<div class="empty">No tasks recorded.</div>';tasks.querySelectorAll('[data-id]').forEach(button=>button.addEventListener('click',()=>{selectedId=button.dataset.id;loadTasks();loadDetail()}));if(!selectedId&&payload.tasks[0]){selectedId=payload.tasks[0].id;loadTasks();loadDetail()}}catch(error){connection.textContent='Disconnected';tasks.innerHTML='<div class="empty">'+esc(error.message)+'</div>'}}
-async function loadDetail(){if(!selectedId)return;try{const response=await fetch('/api/tasks/'+encodeURIComponent(selectedId),{cache:'no-store'});if(!response.ok)throw new Error('Task detail unavailable');const task=await response.json();empty.hidden=true;detail.hidden=false;const events=(task.events||[]).map(event=>'<article class="item"><time>'+esc(stamp(event.timestamp))+'</time><span class="source">'+esc(event.source)+'</span><p>'+esc(event.message)+(event.detail?'\\n'+esc(event.detail):'')+'</p></article>').join('')||'<div class="empty">No agent events recorded yet.</div>';const transitions=(task.transitions||[]).map(item=>'<article class="item"><time>'+esc(stamp(item.timestamp))+'</time><p><strong>'+esc(item.from)+' → '+esc(item.to)+'</strong>'+((item.reason||item.error)?'\\n'+esc(item.reason||item.error):'')+'</p></article>').join('')||'<div class="empty">No transitions.</div>';const diagnostics=task.diagnostics||{};const verification=diagnostics.liveVerification;const verificationDetail=verification?'<p class="meta">'+esc(verification.status)+' · '+esc(verification.summary)+'</p>'+(verification.command?'<p class="meta">Command: '+esc(verification.command)+'</p>':'')+(verification.url?'<p class="meta">Verified local URL (server stopped after the check): '+esc(verification.url)+'</p>':'')+list(verification.checks||[]):'<div class="empty">Awaiting Anti local development-environment verification.</div>';detail.innerHTML='<div class="detail-header"><div><h2>'+esc(task.id)+'</h2><p class="meta">Branch: '+esc(task.taskBranch)+'</p></div><span class="status '+esc(task.state)+'">'+esc(task.state)+'</span></div><div class="grid"><div class="metric"><span>Review cycles</span><strong>'+esc(task.reviewCycles)+' / '+esc(task.maxReviewCycles)+'</strong></div><div class="metric"><span>Codex review</span><strong>'+esc(task.lastReviewVerdict||'Pending')+'</strong></div><div class="metric"><span>Local tests</span><strong>'+esc(task.lastTestPassed===undefined?'Pending':task.lastTestPassed?'Passed':'Failed')+'</strong></div><div class="metric"><span>CI polls</span><strong>'+esc(task.ciWaitAttempts)+'</strong></div></div>'+(task.prUrl?'<p><a href="'+esc(task.prUrl)+'" rel="noreferrer" target="_blank">Open pull request</a></p>':'')+'<section class="section"><h2>Codex human verification points</h2>'+list(diagnostics.humanVerificationChecklist||[])+'</section><section class="section"><h2>Anti live verification</h2>'+verificationDetail+'</section><section class="section"><h2>Agent event feed</h2><div class="timeline">'+events+'</div></section><section class="section"><h2>State timeline</h2><div class="timeline">'+transitions+'</div></section>'}catch(error){empty.hidden=false;detail.hidden=true;empty.textContent=error.message}}
+const localizeEvent=message=>{
+  const fixed={
+    'Task accepted and isolated worktree allocation started.':'已接收任务，开始分配隔离工作区。',
+    'Development request dispatched to Antigravity.':'已向 Anti 发送开发任务。',
+    'Antigravity development invocation completed.':'Anti 开发调用已完成。',
+    'No changes were committed; PR creation halted.':'没有可提交的变更，已停止创建拉取请求。',
+    'Pull request created.':'拉取请求已创建。',
+    'Live verification request dispatched with Codex review checklist.':'已向 Anti 发送携带 Codex 核验清单的本机验证请求。',
+    'Live verification left the worktree non-clean; human decision required.':'本机验证后工作区并非干净状态，需要人工决策。'
+  };
+  if(fixed[message])return fixed[message];
+  let match=message.match(/^CI observation (\\d+)\\/(\\d+): (.+)$/);
+  if(match)return '第 '+match[1]+' / '+match[2]+' 次 CI 状态检查：'+label(match[3]);
+  match=message.match(/^Codex review completed with verdict: (.+)\\.$/);
+  if(match)return 'Codex 审查已完成，结论：'+label(match[1]);
+  match=message.match(/^Live verification completed with status: (.+)\\.$/);
+  if(match)return '本机运行验证已完成，状态：'+label(match[1]);
+  return message;
+};
+async function loadTasks(){try{const response=await fetch('/api/tasks',{cache:'no-store'});if(!response.ok)throw new Error();const payload=await response.json();connection.textContent='本机实时视图';tasks.innerHTML=payload.tasks.map(task=>'<button class="task '+(task.id===selectedId?'selected':'')+'" data-id="'+esc(task.id)+'"><strong>'+esc(task.id)+'</strong><small class="status '+esc(task.state)+'">'+esc(label(task.state))+'</small><small>更新时间：'+esc(stamp(task.updatedAt))+'</small></button>').join('')||'<div class="empty">暂无已记录的任务。</div>';tasks.querySelectorAll('[data-id]').forEach(button=>button.addEventListener('click',()=>{selectedId=button.dataset.id;loadTasks();loadDetail()}));if(!selectedId&&payload.tasks[0]){selectedId=payload.tasks[0].id;loadTasks();loadDetail()}}catch(error){connection.textContent='连接已断开';tasks.innerHTML='<div class="empty">无法获取任务列表，请确认本机监控服务仍在运行。</div>'}}
+async function loadDetail(){if(!selectedId)return;try{const response=await fetch('/api/tasks/'+encodeURIComponent(selectedId),{cache:'no-store'});if(!response.ok)throw new Error();const task=await response.json();empty.hidden=true;detail.hidden=false;const events=(task.events||[]).map(event=>'<article class="item"><time>'+esc(stamp(event.timestamp))+'</time><span class="source">'+esc(label(event.source))+'</span><p>'+esc(localizeEvent(event.message))+(event.detail?'\\n'+esc(event.detail):'')+'</p></article>').join('')||'<div class="empty">暂无代理事件记录。</div>';const transitions=(task.transitions||[]).map(item=>'<article class="item"><time>'+esc(stamp(item.timestamp))+'</time><p><strong>'+esc(label(item.from))+' → '+esc(label(item.to))+'</strong>'+((item.reason||item.error)?'\\n'+esc(item.reason||item.error):'')+'</p></article>').join('')||'<div class="empty">暂无状态流转记录。</div>';const diagnostics=task.diagnostics||{};const verification=diagnostics.liveVerification;const verificationDetail=verification?'<p class="meta">'+esc(label(verification.status))+' · '+esc(verification.summary)+'</p>'+(verification.command?'<p class="meta">启动命令：'+esc(verification.command)+'</p>':'')+(verification.url?'<p class="meta">已核验的本机地址（核验后服务已停止）：'+esc(verification.url)+'</p>':'')+list(verification.checks||[]):'<div class="empty">正在等待 Anti 对本地开发环境进行验证。</div>';detail.innerHTML='<div class="detail-header"><div><h2>'+esc(task.id)+'</h2><p class="meta">任务分支：'+esc(task.taskBranch)+'</p></div><span class="status '+esc(task.state)+'">'+esc(label(task.state))+'</span></div><div class="grid"><div class="metric"><span>审查轮次</span><strong>'+esc(task.reviewCycles)+' / '+esc(task.maxReviewCycles)+'</strong></div><div class="metric"><span>Codex 审查</span><strong>'+esc(label(task.lastReviewVerdict||'PENDING'))+'</strong></div><div class="metric"><span>本地测试</span><strong>'+esc(task.lastTestPassed===undefined?'等待中':task.lastTestPassed?'通过':'失败')+'</strong></div><div class="metric"><span>CI 查询次数</span><strong>'+esc(task.ciWaitAttempts)+'</strong></div></div>'+(task.prUrl?'<p><a href="'+esc(task.prUrl)+'" rel="noreferrer" target="_blank">打开拉取请求</a></p>':'')+'<section class="section"><h2>Codex 人工核验要点</h2>'+list(diagnostics.humanVerificationChecklist||[])+'</section><section class="section"><h2>Anti 本机运行验证</h2>'+verificationDetail+'</section><section class="section"><h2>代理事件记录</h2><div class="timeline">'+events+'</div></section><section class="section"><h2>状态流转记录</h2><div class="timeline">'+transitions+'</div></section>'}catch(error){empty.hidden=false;detail.hidden=true;empty.textContent='无法读取任务详情，请稍后重试。'}}
 loadTasks();setInterval(()=>{loadTasks();loadDetail()},3000);`;
 
 export function createMonitorHttpServer(stateDir: string): http.Server {
