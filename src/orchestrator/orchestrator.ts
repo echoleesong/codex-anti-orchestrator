@@ -587,6 +587,13 @@ export class Orchestrator implements IOrchestrator {
 
             task.diagnostics.lastReviewVerdict = reviewResult.verdict;
             task.diagnostics.humanVerificationChecklist = reviewResult.humanVerificationChecklist;
+            task.metadata = {
+              ...(task.metadata || {}),
+              lastFeedback: {
+                blockingIssues: reviewResult.blockingIssues,
+                warnings: reviewResult.warnings,
+              },
+            };
             this.recordEvent(
               task,
               'CODEX',
