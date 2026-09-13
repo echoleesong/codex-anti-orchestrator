@@ -85,6 +85,21 @@ describe('Antigravity CLI (agy) Adapter', () => {
     expect(prompt).toContain('unit test coverage');
   });
 
+  it('builds a bounded no-change continuation prompt with prior output', () => {
+    const adapter = new AgyAdapter();
+    const prompt = adapter.buildDevelopmentContinuationPrompt(
+      'Implement the timer refactor',
+      'Waiting for command output.',
+      2,
+      3
+    );
+
+    expect(prompt).toContain('Implement the timer refactor');
+    expect(prompt).toContain('Bounded Development Continuation (2/3)');
+    expect(prompt).toContain('Waiting for command output.');
+    expect(prompt).toContain('Do not stop after announcing that you are waiting');
+  });
+
   it('should build structured fix prompts with blocking issues and test failures', () => {
     const adapter = new AgyAdapter();
     const fixPrompt = adapter.buildFixPrompt('Implement OAuth2 login', {

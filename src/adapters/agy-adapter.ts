@@ -128,6 +128,32 @@ export class AgyAdapter {
   }
 
   /**
+   * Builds a stateless follow-up when agy returned successfully before producing files.
+   * Prior output is bounded because it is also persisted in the task event feed.
+   */
+  buildDevelopmentContinuationPrompt(
+    originalPrompt: string,
+    previousOutput: string,
+    attempt: number,
+    maximumAttempts: number
+  ): string {
+    const boundedOutput = previousOutput.trim().slice(0, 4_000) || '(no textual response)';
+    return [
+      '### Original Task Instructions',
+      originalPrompt.trim(),
+      '',
+      `### Bounded Development Continuation (${attempt}/${maximumAttempts})`,
+      'The previous Antigravity invocation exited successfully, but the isolated worktree remained unchanged.',
+      'Continue the implementation now. Use completed command observations, inspect only what is still necessary, and edit files in this worktree.',
+      'Do not stop after announcing that you are waiting for command output. Do not merely restate a plan.',
+      'If execution is genuinely blocked, report the concrete blocker instead of claiming completion.',
+      '',
+      '### Previous Antigravity Response',
+      boundedOutput,
+    ].join('\n');
+  }
+
+  /**
    * Builds the fix prompt for agy incorporating review feedback and test failures.
    */
   buildFixPrompt(originalPrompt: string, feedback: AgyFixFeedback): string {

@@ -181,9 +181,13 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
     const { saveTaskState } = await import('../src/state/state-machine.js');
     await saveTaskState(tempStateDir, task);
 
-    const resumed = await orchestrator.resumeTask(task.id);
+    const resumed = await orchestrator.resumeTask(task.id, {
+      guidance: 'Skip the completed repository-status check and edit the requested files.',
+    });
 
     expect(resumed.state).toBe('WORKTREE_READY');
+    expect(resumed.prompt).toContain('[User Guidance for Resume]');
+    expect(resumed.prompt).toContain('Skip the completed repository-status check');
   });
 
   describe('commitWorktreeChanges Fail-Closed Staging Policy', () => {
