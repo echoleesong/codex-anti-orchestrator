@@ -20,13 +20,7 @@ const CODEX_REVIEW_OUTPUT_SCHEMA = {
   description:
     'Strict result for a read-only code review. APPROVE requires zero blocking issues and at least one concrete human verification check. CHANGES_REQUIRED is for actionable defects. NEEDS_USER_DECISION is only for genuine ambiguity or conflicting requirements.',
   additionalProperties: false,
-  required: [
-    'verdict',
-    'summary',
-    'blockingIssues',
-    'warnings',
-    'humanVerificationChecklist',
-  ],
+  required: ['verdict', 'summary', 'blockingIssues', 'warnings', 'humanVerificationChecklist'],
   properties: {
     verdict: {
       type: 'string',
@@ -36,7 +30,8 @@ const CODEX_REVIEW_OUTPUT_SCHEMA = {
     summary: { type: 'string', description: 'A concise summary grounded in the reviewed diff.' },
     blockingIssues: {
       type: 'array',
-      description: 'Actionable correctness, security, or regression defects. Must be empty for APPROVE.',
+      description:
+        'Actionable correctness, security, or regression defects. Must be empty for APPROVE.',
       items: { type: 'string' },
     },
     warnings: {

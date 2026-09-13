@@ -174,9 +174,10 @@ Thanks!
       expect(withoutChecklist.verdict).toBe('NEEDS_USER_DECISION');
       expect(withoutChecklist.parsedCleanly).toBe(false);
 
-      const withChecklist = parseCodexReviewOutput('No findings.\n\nResidual risk: browser QA pending.', [
-        'Open the timer and verify it starts immediately.',
-      ]);
+      const withChecklist = parseCodexReviewOutput(
+        'No findings.\n\nResidual risk: browser QA pending.',
+        ['Open the timer and verify it starts immediately.']
+      );
       expect(withChecklist.verdict).toBe('APPROVE');
       expect(withChecklist.parsedCleanly).toBe(true);
       expect(withChecklist.blockingIssues).toEqual([]);
