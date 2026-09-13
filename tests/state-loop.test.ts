@@ -396,6 +396,9 @@ describe('Controlled State-Loop Execution & Transitions', () => {
         'CHANGES_REQUIRED',
       ],
       testsPass: [true, true, true, true],
+      // Known review failures must enter the fix loop without being blocked by
+      // the temporary absence of CI checks on a newly pushed commit.
+      prChecksStatus: 'empty_array',
     });
 
     const orchestrator = new Orchestrator({

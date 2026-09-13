@@ -672,6 +672,35 @@ export class Orchestrator implements IOrchestrator {
               return task;
             }
 
+            // A review or local-test failure is actionable without consulting
+            // remote CI. New PR commits frequently have no checks yet, and
+            // treating that temporary absence as a human decision blocks the
+            // bounded automated fix loop before it can act on known defects.
+            if (!reviewClean || !testPassed) {
+              if (task.diagnostics.reviewCycles >= task.diagnostics.maxReviewCycles) {
+                transitionTaskState(task, 'NEEDS_USER_DECISION', {
+                  reason: `Reached maximum review cycles (${task.diagnostics.maxReviewCycles}) with unresolved issues.`,
+                });
+                await saveTaskState(this.stateDir, task);
+                return task;
+              }
+
+              task.diagnostics.reviewCycles += 1;
+              transitionTaskState(task, 'AGY_FIXING', {
+                reason: `Attempting automated fix iteration ${task.diagnostics.reviewCycles} of ${task.diagnostics.maxReviewCycles}.`,
+              });
+              task.metadata = {
+                ...(task.metadata || {}),
+                lastFeedback: {
+                  blockingIssues: reviewResult.blockingIssues,
+                  warnings: reviewResult.warnings,
+                  testErrors,
+                },
+              };
+              await saveTaskState(this.stateDir, task);
+              break;
+            }
+
             const ciWait = await this.waitForCI(task, pr, prTarget, executor, loopOptions.ciWait);
             const ciPassing = ciWait.passing;
 
@@ -703,30 +732,9 @@ export class Orchestrator implements IOrchestrator {
               break;
             }
 
-            // If not clean and review cycles exhausted -> NEEDS_USER_DECISION
-            if (task.diagnostics.reviewCycles >= task.diagnostics.maxReviewCycles) {
-              transitionTaskState(task, 'NEEDS_USER_DECISION', {
-                reason: `Reached maximum review cycles (${task.diagnostics.maxReviewCycles}) with unresolved issues.`,
-              });
-              await saveTaskState(this.stateDir, task);
-              return task;
-            }
-
-            // Can attempt fix cycle
-            task.diagnostics.reviewCycles += 1;
-            transitionTaskState(task, 'AGY_FIXING', {
-              reason: `Attempting automated fix iteration ${task.diagnostics.reviewCycles} of ${task.diagnostics.maxReviewCycles}.`,
-            });
-            task.metadata = {
-              ...(task.metadata || {}),
-              lastFeedback: {
-                blockingIssues: reviewResult.blockingIssues,
-                warnings: reviewResult.warnings,
-                testErrors,
-              },
-            };
-            await saveTaskState(this.stateDir, task);
-            break;
+            // testPassed and reviewClean are guaranteed above. Reaching this
+            // point with passing CI always enters live verification.
+            throw new Error('Unreachable review evaluation state after passing automated gates.');
           }
 
           case 'AGY_VALIDATING': {
