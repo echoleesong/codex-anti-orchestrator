@@ -242,6 +242,47 @@ export class CodexAdapter {
   }
 
   /**
+   * Builds the structured review prompt for Codex execution.
+   */
+  buildReviewPrompt(
+    options: {
+      baseBranch?: string;
+      targetBranch?: string;
+      diff?: string;
+    } = {}
+  ): string {
+    return buildCodexReviewPrompt(options);
+  }
+
+  /**
+   * Retrieves the git diff between baseBranch and worktree HEAD.
+   */
+  async getDiff(
+    worktreePath: string,
+    baseBranch: string = 'main',
+    executor?: CommandExecutor
+  ): Promise<string> {
+    const exec = executor || this.executor;
+    try {
+      const base = baseBranch || 'main';
+      let diffRes = await exec('git', ['diff', `${base}...HEAD`], {
+        cwd: worktreePath,
+      });
+      if (diffRes.exitCode !== 0) {
+        diffRes = await exec('git', ['diff', base], {
+          cwd: worktreePath,
+        });
+      }
+      if (diffRes.exitCode === 0 && typeof diffRes.stdout === 'string') {
+        return diffRes.stdout;
+      }
+      return '';
+    } catch {
+      return '';
+    }
+  }
+
+  /**
    * Invokes Codex using 'codex exec --sandbox read-only' to perform a read-only code review.
    * Enforces argument arrays, read-only sandbox permissions, and fail-closed parsing.
    */
@@ -249,11 +290,14 @@ export class CodexAdapter {
     const executor = options.executor || this.executor;
     const timeoutMs = options.timeoutMs ?? 120000; // 2 minutes default
 
-    const prompt = buildCodexReviewPrompt({
-      baseBranch: options.baseBranch,
-      targetBranch: options.prNumberOrBranch,
-      diff: options.diff,
-    });
+    // Reuse pre-constructed prompt if provided to ensure exact parity with audit log
+    const prompt =
+      options.prompt ||
+      this.buildReviewPrompt({
+        baseBranch: options.baseBranch,
+        targetBranch: options.prNumberOrBranch,
+        diff: options.diff,
+      });
 
     // Strict command invariant: uses 'codex exec --sandbox read-only <prompt>'
     const args = ['exec', '--sandbox', 'read-only', prompt];

@@ -1,5 +1,5 @@
 import { AgyAdapter } from '../adapters/agy-adapter.js';
-import { CodexAdapter } from '../adapters/codex-adapter.js';
+import { buildCodexReviewPrompt, CodexAdapter } from '../adapters/codex-adapter.js';
 import { GitHubPRAdapter } from '../adapters/github-pr-adapter.js';
 import {
   checkGitCleanliness,
@@ -22,6 +22,7 @@ import {
   saveAllowedBaseConfig,
   suggestAllowedBaseDir,
 } from '../security/allowed-base-config.js';
+import { sanitizePromptAuditText } from '../security/prompt-sanitizer.js';
 import {
   listTaskStates,
   loadTaskState,
@@ -35,6 +36,7 @@ import type {
   CreateTaskOptions,
   IOrchestrator,
   ResumeTaskOptions,
+  TaskPromptAudit,
   TaskRecord,
   TaskEventSource,
   TaskState,
@@ -53,6 +55,7 @@ export interface RunLoopOptions {
 
 const MAX_TASK_EVENTS = 100;
 const MAX_CI_WAIT_HISTORY = 20;
+const MAX_PROMPT_AUDITS = 50;
 const DEFAULT_CI_WAIT_ATTEMPTS = 12;
 const DEFAULT_CI_POLL_INTERVAL_MS = 10_000;
 
@@ -124,6 +127,31 @@ export class Orchestrator implements IOrchestrator {
       detail: detail ? redactSecrets(detail).slice(0, 2_000) : undefined,
     };
     task.events = [...(task.events || []), event].slice(-MAX_TASK_EVENTS);
+  }
+
+  private recordPromptAudit(
+    task: TaskRecord,
+    audit: {
+      actor: 'ANTI' | 'CODEX' | string;
+      stage: TaskState | string;
+      title: string;
+      body: string;
+    }
+  ): void {
+    const sanitizedBody = sanitizePromptAuditText(audit.body, {
+      worktreePath: task.worktreePath,
+      targetRepoPath: task.targetRepoPath,
+      stateDir: this.stateDir,
+      allowedBaseDir: this.allowedBaseDir,
+    });
+    const record: TaskPromptAudit = {
+      timestamp: new Date().toISOString(),
+      actor: audit.actor,
+      stage: audit.stage,
+      title: audit.title,
+      body: sanitizedBody,
+    };
+    task.promptAudits = [...(task.promptAudits || []), record].slice(-MAX_PROMPT_AUDITS);
   }
 
   private async waitForCI(
@@ -481,6 +509,13 @@ export class Orchestrator implements IOrchestrator {
             transitionTaskState(task, 'AGY_DEVELOPING', {
               reason: 'Invoking agy for autonomous code generation and tests.',
             });
+            const devPrompt = agy.buildDevelopmentPrompt(task.prompt);
+            this.recordPromptAudit(task, {
+              actor: 'ANTI',
+              stage: 'AGY_DEVELOPING',
+              title: 'Anti 初始开发',
+              body: devPrompt,
+            });
             await saveTaskState(this.stateDir, task);
             this.recordEvent(task, 'ANTI', 'Development request dispatched to Antigravity.');
             await saveTaskState(this.stateDir, task);
@@ -577,11 +612,29 @@ export class Orchestrator implements IOrchestrator {
           }
 
           case 'CODEX_REVIEWING': {
-            // Invoke Codex review in read-only sandbox mode, explicitly checking diff against baseBranch
+            // Retrieve code diff from baseBranch to worktree HEAD
+            const diff = await codex.getDiff(task.worktreePath, task.baseBranch, executor);
+            const reviewPrompt = codex.buildReviewPrompt({
+              baseBranch: task.baseBranch,
+              targetBranch: task.taskBranch,
+              diff,
+            });
+            this.recordPromptAudit(task, {
+              actor: 'CODEX',
+              stage: 'CODEX_REVIEWING',
+              title: 'Codex 审查',
+              body: reviewPrompt,
+            });
+            await saveTaskState(this.stateDir, task);
+
+            // Invoke Codex review in read-only sandbox mode, explicitly checking diff against baseBranch.
+            // Shares the exact final prompt including diff between prompt audit and execution.
             const reviewResult = await codex.review({
               worktreePath: task.worktreePath,
               baseBranch: task.baseBranch,
               prNumberOrBranch: task.taskBranch,
+              diff,
+              prompt: reviewPrompt,
               executor,
             });
 
@@ -695,6 +748,15 @@ export class Orchestrator implements IOrchestrator {
 
           case 'AGY_VALIDATING': {
             const checklist = task.diagnostics.humanVerificationChecklist || [];
+            const livePrompt = agy.buildLiveVerificationPrompt(checklist);
+            this.recordPromptAudit(task, {
+              actor: 'ANTI',
+              stage: 'AGY_VALIDATING',
+              title: 'Anti 本机核验',
+              body: livePrompt,
+            });
+            await saveTaskState(this.stateDir, task);
+
             const verification = await agy.runLiveVerification(task.worktreePath, checklist, {
               targetRepoPath: task.targetRepoPath,
               stateDir: this.stateDir,
@@ -760,6 +822,15 @@ export class Orchestrator implements IOrchestrator {
             }) || {
               blockingIssues: ['Please resolve issues found in testing/review.'],
             };
+
+            const fixPrompt = agy.buildFixPrompt(task.prompt, feedback);
+            this.recordPromptAudit(task, {
+              actor: 'ANTI',
+              stage: 'AGY_FIXING',
+              title: 'Anti 审查修复',
+              body: fixPrompt,
+            });
+            await saveTaskState(this.stateDir, task);
 
             const fixRes = await agy.runFix(task.worktreePath, task.prompt, feedback, {
               targetRepoPath: task.targetRepoPath,

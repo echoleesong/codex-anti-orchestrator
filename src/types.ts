@@ -115,6 +115,14 @@ export interface CIWaitObservation {
   checks: PRCheckItem[];
 }
 
+export interface TaskPromptAudit {
+  timestamp: string;
+  actor: 'ANTI' | 'CODEX' | string;
+  stage: TaskState | string;
+  title: string;
+  body: string;
+}
+
 export interface TaskRecord {
   id: string;
   targetRepoPath: string;
@@ -129,6 +137,7 @@ export interface TaskRecord {
   diagnostics: TaskDiagnostics;
   metadata?: Record<string, unknown>;
   events?: TaskEvent[];
+  promptAudits?: TaskPromptAudit[];
 }
 
 export interface CreateTaskOptions {
@@ -168,6 +177,7 @@ export interface CodexReviewOptions {
   worktreePath: string;
   baseBranch?: string;
   diff?: string;
+  prompt?: string;
   prNumberOrBranch?: string;
   executor?: CommandExecutor;
   timeoutMs?: number;

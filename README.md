@@ -131,7 +131,7 @@ npx tsx src/cli.ts monitor
 npx tsx src/cli.ts monitor --port 4390
 ```
 
-The monitor refreshes task state every three seconds and displays task progress, state transitions, PR links, local-test and review status, bounded CI polling observations, Codex's human-verification checklist, Anti's localhost verification evidence, and a redacted agent-event feed. It has no mutation, merge, or deployment controls and is reachable only at `http://127.0.0.1:<port>`.
+The monitor refreshes task state every three seconds and displays task progress, state transitions, PR links, local-test and review status, bounded CI polling observations, Codex's human-verification checklist, Anti's localhost verification evidence, redacted agent-event feeds, and persistent AI prompt audit records. Each prompt audit captures the exact, sanitized final prompt sent to AI models (Anti initial development, Codex review, Anti review fix, Anti live verification) before execution, displayed via native collapsible `<details>` cards (collapsed by default, preserving user expansion state across auto-refreshes). It has no mutation, merge, or deployment controls and is reachable only at `http://127.0.0.1:<port>`.
 
 When any MCP tool is called, the MCP process starts this same read-only monitor automatically and opens it in the local browser once. It prefers `http://127.0.0.1:4390`; if that loopback port is already occupied, it safely selects the next available port and reports the URL in the MCP response.
 
