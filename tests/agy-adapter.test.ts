@@ -270,6 +270,27 @@ describe('Antigravity CLI (agy) Adapter', () => {
     expect(call.options?.cwd).toBe(worktreePath);
   });
 
+  it('should select a deterministic task-scoped project for real executions', async () => {
+    const capturedCalls: string[][] = [];
+    const mockExecutor: CommandExecutor = async (_file, args) => {
+      capturedCalls.push(args);
+      return { exitCode: 0, stdout: 'done', stderr: '' };
+    };
+    const configRoot = path.join(tempDir, 'agy-config');
+    const adapter = new AgyAdapter(mockExecutor, true, configRoot);
+
+    await adapter.runDevelopment(worktreePath, 'Implement it', {
+      targetRepoPath: testRepoPath,
+    });
+
+    expect(capturedCalls[0][0]).toBe('--project');
+    expect(capturedCalls[0][1]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(capturedCalls[0][2]).toBe('--sandbox');
+    expect(fs.existsSync(path.join(configRoot, 'projects', `${capturedCalls[0][1]}.json`))).toBe(
+      true
+    );
+  });
+
   it('should support validated model and bounded print timeout options in agy args', async () => {
     const capturedCalls: Array<{
       file: string;

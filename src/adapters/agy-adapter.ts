@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { prepareAgyProjectConfig } from '../security/agy-project-config.js';
 import { validateStateDirIsolation } from '../security/path-validator.js';
 import type {
   AgyExecutionResult,
@@ -77,9 +78,19 @@ export function parseLiveVerificationOutput(rawOutput: string): LiveVerification
 
 export class AgyAdapter {
   private executor: CommandExecutor;
+  private configureProject: boolean;
+  private agyConfigRoot?: string;
 
-  constructor(executor: CommandExecutor = defaultExecutor) {
+  constructor(
+    executor: CommandExecutor = defaultExecutor,
+    // Injected executors are the test seam and must not mutate the user's Agy config by default.
+    // A wrapper that still launches real Agy should explicitly pass true.
+    configureProject = executor === defaultExecutor,
+    agyConfigRoot?: string
+  ) {
     this.executor = executor;
+    this.configureProject = configureProject;
+    this.agyConfigRoot = agyConfigRoot;
   }
 
   /**
@@ -304,8 +315,14 @@ export class AgyAdapter {
 
     this.validateWorktree(options.worktreePath, options.targetRepoPath);
 
+    const args: string[] = [];
+    if (this.configureProject) {
+      const project = prepareAgyProjectConfig(options.worktreePath, this.agyConfigRoot);
+      args.push('--project', project.projectId);
+    }
+
     // Strict command invariant: uses argument array only, explicitly chooses --sandbox, safe --mode accept-edits, and --print
-    const args: string[] = ['--sandbox', '--mode', 'accept-edits'];
+    args.push('--sandbox', '--mode', 'accept-edits');
 
     if (options.model !== undefined) {
       const model = this.validateModel(options.model);

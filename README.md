@@ -135,6 +135,8 @@ The monitor refreshes task state every three seconds and displays task progress,
 
 Development invocations also fail closed. If Antigravity exits successfully at a tool boundary without changing the isolated worktree, the orchestrator sends at most two stateless continuation prompts (three total invocations), retaining bounded prior output in the task event feed. A command error still stops immediately, and exhausting the bounded attempts creates no commit or PR. Guidance supplied when resuming a failed task is appended to the persisted task prompt before the retry.
 
+Before a real Antigravity invocation, the orchestrator creates or refreshes a deterministic project entry under `~/.gemini/config/projects/` and launches `agy` with that explicit project. Its grants are scoped to the isolated task worktree: file reads and writes plus a small set of inspection, build, and test commands. Push, merge, deployment, elevated, network-transfer, destructive Git, and unsandboxed commands remain denied. Existing global Antigravity permissions are not expanded.
+
 When any MCP tool is called, the MCP process starts this same read-only monitor automatically and opens it in the local browser once. It prefers `http://127.0.0.1:4390`; if that loopback port is already occupied, it safely selects the next available port and reports the URL in the MCP response.
 
 ### First-Use Allowed Directory Confirmation
