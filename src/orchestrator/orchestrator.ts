@@ -616,6 +616,7 @@ export class Orchestrator implements IOrchestrator {
             const reviewResult = await codex.review({
               worktreePath: task.worktreePath,
               baseBranch: task.baseBranch,
+              taskPrompt: task.prompt,
               prNumberOrBranch: task.taskBranch,
               executor,
             });

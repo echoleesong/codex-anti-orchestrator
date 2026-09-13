@@ -171,6 +171,7 @@ export interface CodexReviewResult {
 export interface CodexReviewOptions {
   worktreePath: string;
   baseBranch?: string;
+  taskPrompt?: string;
   diff?: string;
   prNumberOrBranch?: string;
   executor?: CommandExecutor;
