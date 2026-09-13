@@ -200,6 +200,52 @@ Thanks!
       expect(args[3]).toContain('"verdict": "APPROVE"');
     });
 
+    it('should reuse pre-constructed prompt when options.prompt is provided', async () => {
+      let passedPrompt = '';
+      const mockExecutor: CommandExecutor = async (_file, args) => {
+        passedPrompt = args[3];
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            verdict: 'APPROVE',
+            summary: 'Approved with reused prompt',
+            blockingIssues: [],
+            warnings: [],
+            humanVerificationChecklist: ['Verify behavior'],
+          }),
+          stderr: '',
+        };
+      };
+
+      const adapter = new CodexAdapter(mockExecutor);
+      const customPrompt = 'CUSTOM_PRECONSTRUCTED_REVIEW_PROMPT_WITH_DIFF';
+      const res = await adapter.review({
+        worktreePath: '/fake/worktree',
+        prompt: customPrompt,
+      });
+
+      expect(res.verdict).toBe('APPROVE');
+      expect(passedPrompt).toBe(customPrompt);
+    });
+
+    it('should retrieve git diff using getDiff helper', async () => {
+      let executedGitArgs: string[] = [];
+      const mockExecutor: CommandExecutor = async (_file, args) => {
+        executedGitArgs = args;
+        return {
+          exitCode: 0,
+          stdout: 'diff --git a/file.ts b/file.ts\n',
+          stderr: '',
+        };
+      };
+
+      const adapter = new CodexAdapter(mockExecutor);
+      const diff = await adapter.getDiff('/fake/worktree', 'main');
+
+      expect(diff).toBe('diff --git a/file.ts b/file.ts\n');
+      expect(executedGitArgs).toEqual(['diff', 'main...HEAD']);
+    });
+
     it('should fail safe to NEEDS_USER_DECISION when codex execution fails or crashes', async () => {
       const mockExecutor: CommandExecutor = async () => ({
         exitCode: 1,

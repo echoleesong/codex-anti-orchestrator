@@ -612,9 +612,12 @@ export class Orchestrator implements IOrchestrator {
           }
 
           case 'CODEX_REVIEWING': {
-            const reviewPrompt = buildCodexReviewPrompt({
+            // Retrieve code diff from baseBranch to worktree HEAD
+            const diff = await codex.getDiff(task.worktreePath, task.baseBranch, executor);
+            const reviewPrompt = codex.buildReviewPrompt({
               baseBranch: task.baseBranch,
               targetBranch: task.taskBranch,
+              diff,
             });
             this.recordPromptAudit(task, {
               actor: 'CODEX',
@@ -624,11 +627,14 @@ export class Orchestrator implements IOrchestrator {
             });
             await saveTaskState(this.stateDir, task);
 
-            // Invoke Codex review in read-only sandbox mode, explicitly checking diff against baseBranch
+            // Invoke Codex review in read-only sandbox mode, explicitly checking diff against baseBranch.
+            // Shares the exact final prompt including diff between prompt audit and execution.
             const reviewResult = await codex.review({
               worktreePath: task.worktreePath,
               baseBranch: task.baseBranch,
               prNumberOrBranch: task.taskBranch,
+              diff,
+              prompt: reviewPrompt,
               executor,
             });
 

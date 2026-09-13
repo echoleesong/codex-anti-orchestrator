@@ -283,6 +283,8 @@ describe('Prompt Audit Sanitization & Persistence', () => {
       expect(codexAudit.body).toContain(
         'You are performing an automated, strictly read-only code review'
       );
+      expect(codexAudit.body).toContain('Code Diff to review:');
+      expect(codexAudit.body).toContain('feature.ts');
 
       // Verify Anti 审查修复 record
       const fixAudit = finalTask.promptAudits!.find((a) => a.title === 'Anti 审查修复')!;
@@ -297,6 +299,151 @@ describe('Prompt Audit Sanitization & Persistence', () => {
       expect(validAudit.stage).toBe('AGY_VALIDATING');
       expect(validAudit.body).toContain('### Mandatory Live Verification Before Human PR Review');
       expect(validAudit.body).toContain('Verify login works on localhost:3000');
+    });
+
+    it('regression: CODEX_REVIEWING prompt audit and codex.review share exact final prompt with diff', async () => {
+      const orchestrator = new Orchestrator({
+        stateDir: tempStateDir,
+        allowedBaseDir: tempDir,
+      });
+
+      const task = await orchestrator.createTask({
+        repoPath: testRepoPath,
+        prompt: 'Add secure token auth',
+      });
+
+      const mockDiff = [
+        '--- a/src/auth.ts',
+        '+++ b/src/auth.ts',
+        '@@ -1,3 +1,5 @@',
+        ' export function authenticate() {',
+        '+  const secretToken = "ghp_1234567890abcdef1234567890abcdef12345678";',
+        `+  const sessionDir = "${path.join(tempStateDir, 'worktrees', task.id)}";`,
+        '   return true;',
+        ' }',
+      ].join('\n');
+
+      let capturedCodexPrompt = '';
+      let diskAuditBeforeCodexFinished: TaskRecord | null = null;
+      let codexCalled = false;
+      let uncommittedChanges = true;
+
+      const mockExecutor: CommandExecutor = async (file, args) => {
+        if (file === 'git') {
+          if (args[0] === 'rev-parse') return { exitCode: 0, stdout: 'main\n', stderr: '' };
+          if (args[0] === 'status') {
+            if (args.includes('--porcelain')) {
+              return {
+                exitCode: 0,
+                stdout: uncommittedChanges ? 'M src/auth.ts\n' : '',
+                stderr: '',
+              };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+          }
+          if (args[0] === 'diff') {
+            return { exitCode: 0, stdout: mockDiff, stderr: '' };
+          }
+          if (args[0] === 'commit') {
+            uncommittedChanges = false;
+            return { exitCode: 0, stdout: '', stderr: '' };
+          }
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (file === 'gh') {
+          if (args[0] === 'pr' && args[1] === 'create') {
+            return { exitCode: 0, stdout: 'https://github.com/org/repo/pull/777\n', stderr: '' };
+          }
+          if (args[0] === 'pr' && args[1] === 'checks') {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify([
+                { name: 'ci', state: 'SUCCESS', bucket: 'pass', workflow: 'CI' },
+              ]),
+              stderr: '',
+            };
+          }
+        }
+        if (file === 'agy') {
+          const promptArg = args[args.indexOf('--print') + 1] || '';
+          if (promptArg.includes('Mandatory Live Verification')) {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                status: 'PASSED',
+                command: 'npm run start',
+                url: 'http://127.0.0.1:3000',
+                checks: ['Verify token auth works'],
+                summary: 'Auth verified on localhost:3000',
+              }),
+              stderr: '',
+            };
+          }
+          return { exitCode: 0, stdout: 'Anti code edits finished\n', stderr: '' };
+        }
+        if (file === 'codex') {
+          codexCalled = true;
+          // args: ['exec', '--sandbox', 'read-only', prompt]
+          capturedCodexPrompt = args[3];
+
+          // Invariant: Prompt audit is already persisted to disk BEFORE codex call returns
+          diskAuditBeforeCodexFinished = await loadTaskState(tempStateDir, task.id);
+
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              verdict: 'APPROVE',
+              summary: 'All token authentication changes approved.',
+              blockingIssues: [],
+              warnings: [],
+              humanVerificationChecklist: ['Verify token auth works'],
+            }),
+            stderr: '',
+          };
+        }
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+
+      const finalTask = await orchestrator.runTaskLoop(task.id, {
+        executor: mockExecutor,
+        testRunner: async () => ({ pass: true }),
+      });
+
+      expect(codexCalled).toBe(true);
+      expect(finalTask.state).toBe('AWAITING_HUMAN_APPROVAL');
+
+      // 1. Verify that the prompt sent to Codex actually contains the diff
+      expect(capturedCodexPrompt).toBeTruthy();
+      expect(capturedCodexPrompt).toContain('Code Diff to review:');
+      expect(capturedCodexPrompt).toContain('```diff');
+      expect(capturedCodexPrompt).toContain('secretToken');
+      expect(capturedCodexPrompt).toContain('sessionDir');
+
+      // 2. Verify disk persistence happened atomically before Codex completed
+      expect(diskAuditBeforeCodexFinished).not.toBeNull();
+      const auditBeforeFinish = diskAuditBeforeCodexFinished!.promptAudits?.find(
+        (a) => a.stage === 'CODEX_REVIEWING'
+      );
+      expect(auditBeforeFinish).toBeDefined();
+
+      // 3. Verify audit record in task matches the exact captured prompt after sanitization
+      const codexAudit = finalTask.promptAudits?.find((a) => a.stage === 'CODEX_REVIEWING');
+      expect(codexAudit).toBeDefined();
+
+      const expectedSanitizedBody = sanitizePromptAuditText(capturedCodexPrompt, {
+        worktreePath: finalTask.worktreePath,
+        targetRepoPath: finalTask.targetRepoPath,
+        stateDir: tempStateDir,
+        allowedBaseDir: tempDir,
+      });
+
+      expect(codexAudit!.body).toBe(expectedSanitizedBody);
+
+      // 4. Verify sanitization details inside the shared diff
+      expect(codexAudit!.body).toContain('[REDACTED_GITHUB_TOKEN]');
+      expect(codexAudit!.body).not.toContain('ghp_1234567890abcdef1234567890abcdef12345678');
+      expect(codexAudit!.body).toContain('[WORKTREE]');
+      expect(codexAudit!.body).not.toContain(finalTask.worktreePath);
     });
 
     it('gracefully handles legacy tasks without promptAudits', async () => {
