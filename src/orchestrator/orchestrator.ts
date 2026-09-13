@@ -368,8 +368,10 @@ export class Orchestrator implements IOrchestrator {
 
     const lines = statusRes.stdout
       .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
+      // Porcelain v1 uses two fixed-width status columns followed by one space.
+      // Trimming here would remove a leading blank status column (for example
+      // ` M apps/web/file.ts`) and then slice the first character from the path.
+      .filter((line) => line.length >= 4);
 
     if (lines.length === 0) {
       return false; // No changes to commit

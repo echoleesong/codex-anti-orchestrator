@@ -210,6 +210,27 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
       expect(log).toContain('feat: add feature.ts');
     });
 
+    it('should preserve the first path character for tracked worktree modifications', async () => {
+      const task = await orchestrator.createTask({
+        repoPath: testRepoPath,
+        prompt: 'Tracked staging test',
+      });
+
+      fs.writeFileSync(path.join(task.worktreePath, 'index.ts'), 'console.log("updated");\n');
+      const committed = await orchestrator.commitWorktreeChanges(
+        task.worktreePath,
+        'fix: update tracked file'
+      );
+
+      expect(committed).toBe(true);
+      const changed = execFileSync('git', ['show', '--name-only', '--format='], {
+        cwd: task.worktreePath,
+      })
+        .toString()
+        .trim();
+      expect(changed).toBe('index.ts');
+    });
+
     it('should fail closed and reject commit if prohibited sensitive files exist in worktree', async () => {
       const task = await orchestrator.createTask({
         repoPath: testRepoPath,
