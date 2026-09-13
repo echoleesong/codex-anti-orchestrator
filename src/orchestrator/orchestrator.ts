@@ -811,12 +811,32 @@ export class Orchestrator implements IOrchestrator {
               return task;
             }
 
+            this.recordEvent(
+              task,
+              'ANTI',
+              'Antigravity fix invocation completed.',
+              fixRes.stdout || fixRes.stderr
+            );
+
             // Commit fix changes
-            await this.commitWorktreeChanges(
+            const fixCommitted = await this.commitWorktreeChanges(
               task.worktreePath,
               `fix: resolve review feedback and test failures (cycle ${task.diagnostics.reviewCycles})`,
               executor
             );
+            if (!fixCommitted) {
+              transitionTaskState(task, 'NEEDS_USER_DECISION', {
+                reason:
+                  'Antigravity fix invocation completed without producing a new commit; PR was not updated.',
+              });
+              this.recordEvent(
+                task,
+                'ORCHESTRATOR',
+                'No fix changes were committed; PR update halted.'
+              );
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
 
             // Push updated changes to task branch
             const pushRes = await pr.pushTaskBranch(task.worktreePath, task.taskBranch, executor);

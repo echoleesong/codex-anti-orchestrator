@@ -205,6 +205,9 @@ export class AgyAdapter {
     lines.push('1. Resolve all blocking issues and failing tests without introducing regressions.');
     lines.push('2. Do not mutate files outside this isolated worktree.');
     lines.push('3. Verify fixes locally before finishing.');
+    lines.push(
+      '4. Start with built-in read_file/write_file tools and make the requested edits before running terminal exploration commands. Do not begin with git status, git diff, ls, or a restatement of the plan.'
+    );
 
     return lines.join('\n');
   }

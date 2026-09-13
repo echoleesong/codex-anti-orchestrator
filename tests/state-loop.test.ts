@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Orchestrator } from '../src/orchestrator/orchestrator.js';
+import { saveTaskState } from '../src/state/state-machine.js';
 import type { CommandExecutor, ExecOutput } from '../src/types.js';
 
 describe('Controlled State-Loop Execution & Transitions', () => {
@@ -360,6 +361,30 @@ describe('Controlled State-Loop Execution & Transitions', () => {
     expect(states).toContain('AGY_FIXING');
     expect(states).toContain('PR_UPDATING');
     expect(states[states.length - 1]).toBe('AWAITING_HUMAN_APPROVAL');
+  });
+
+  it('halts PR updating when a successful fix invocation produces no changes', async () => {
+    const mock = createMockExecutor({ worktreeChanges: false });
+    const orchestrator = new Orchestrator({ stateDir, allowedBaseDir: tempDir, executor: mock });
+    const task = await orchestrator.createTask({ repoPath, prompt: 'No-op fix task' });
+    task.state = 'AGY_FIXING';
+    task.metadata = {
+      prUrl: 'https://github.com/example-owner/example-repo/pull/99',
+      prNumber: 99,
+      lastFeedback: { blockingIssues: ['Implement the missing behavior.'], warnings: [] },
+    };
+    await saveTaskState(stateDir, task);
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
+    expect(finishedTask.transitions.at(-1)?.reason).toContain('without producing a new commit');
+    expect(finishedTask.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ message: 'Antigravity fix invocation completed.' }),
+        expect.objectContaining({ message: 'No fix changes were committed; PR update halted.' }),
+      ])
+    );
   });
 
   it('should transition to NEEDS_USER_DECISION when max review cycles is exhausted', async () => {
