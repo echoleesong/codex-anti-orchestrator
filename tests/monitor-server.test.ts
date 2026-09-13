@@ -114,4 +114,71 @@ describe('local monitor HTTP server', () => {
       /localhost/
     );
   });
+
+  it('serves sanitized prompt audit records and handles legacy tasks without prompt audits', async () => {
+    // Task with prompt audits including secrets, absolute paths, and env vars
+    const auditTask: TaskRecord = {
+      ...task,
+      id: 'task-456-with-prompts',
+      promptAudits: [
+        {
+          timestamp: '2026-01-01T00:00:30.000Z',
+          actor: 'ANTI',
+          stage: 'AGY_DEVELOPING',
+          title: 'Anti 初始开发',
+          body: 'Implement feature with token=supersecretvalue and file /Users/example/secret.ts and SECRET_KEY=12345678',
+        },
+        {
+          timestamp: '2026-01-01T00:01:00.000Z',
+          actor: 'CODEX',
+          stage: 'CODEX_REVIEWING',
+          title: 'Codex 审查',
+          body: 'Reviewing worktree at /safe/external/worktree against main branch',
+        },
+      ],
+    };
+    await saveTaskState(stateDir, auditTask);
+
+    const monitor = await startMonitorServer({ stateDir, port: 0 });
+    try {
+      // 1. List view should include promptAuditCount
+      const listRes = await request(monitor.port, '/api/tasks');
+      expect(listRes.status).toBe(200);
+      const listData = JSON.parse(listRes.body);
+      const taskInList = listData.tasks.find((t: { id: string }) => t.id === auditTask.id);
+      expect(taskInList.promptAuditCount).toBe(2);
+
+      // 2. Detail view for task with prompt audits
+      const detailRes = await request(monitor.port, `/api/tasks/${auditTask.id}`);
+      expect(detailRes.status).toBe(200);
+      const detailData = JSON.parse(detailRes.body);
+      expect(Array.isArray(detailData.promptAudits)).toBe(true);
+      expect(detailData.promptAudits.length).toBe(2);
+
+      const [audit1, audit2] = detailData.promptAudits;
+      expect(audit1.title).toBe('Anti 初始开发');
+      expect(audit1.actor).toBe('ANTI');
+      expect(audit1.stage).toBe('AGY_DEVELOPING');
+      expect(audit1.body).toContain('[REDACTED_SECRET]');
+      expect(audit1.body).toContain('[REDACTED_ENV]');
+      expect(audit1.body).not.toContain('supersecretvalue');
+      expect(audit1.body).not.toContain('12345678');
+      expect(audit1.body).not.toContain('/Users/example/secret.ts');
+      expect(audit1.body).toContain('[PATH]');
+
+      expect(audit2.title).toBe('Codex 审查');
+      expect(audit2.actor).toBe('CODEX');
+      expect(audit2.body).not.toContain('/safe/external/worktree');
+      expect(audit2.body).toContain('[WORKTREE]');
+
+      // 3. Detail view for legacy task without prompt audits: returns empty array []
+      const legacyRes = await request(monitor.port, `/api/tasks/${task.id}`);
+      expect(legacyRes.status).toBe(200);
+      const legacyData = JSON.parse(legacyRes.body);
+      expect(Array.isArray(legacyData.promptAudits)).toBe(true);
+      expect(legacyData.promptAudits.length).toBe(0);
+    } finally {
+      await monitor.close();
+    }
+  });
 });

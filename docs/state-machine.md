@@ -110,6 +110,9 @@ To prevent infinite loops between `CODEX_REVIEWING` and `AGY_FIXING` and guarant
   - If the human operator decides to accept the PR with known, documented warnings, it transitions to **`AWAITING_HUMAN_OVERRIDE`** (not `AWAITING_HUMAN_APPROVAL`).
   - In `AWAITING_HUMAN_OVERRIDE`, remaining risks are explicitly flagged, the worktree is preserved, and merge operations must be performed manually by the human maintainer.
   - If the human operator provides additional guidance (`--guidance "<instructions>"`), the task transitions to `AGY_FIXING` to resume the automated loop.
+- **AI Prompt Auditing at Each Step**:
+  - Before each invocation of external AI models (`AGY_DEVELOPING`, `CODEX_REVIEWING`, `AGY_FIXING`, `AGY_VALIDATING`), the exact final sanitized prompt is recorded to `promptAudits` on the `TaskRecord` and saved immediately to disk.
+  - If process execution is interrupted or crashes mid-step, previously recorded prompt audit entries are fully preserved on disk.
 
 ---
 

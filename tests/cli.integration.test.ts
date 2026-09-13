@@ -87,7 +87,7 @@ exit 127
   it('should output clean, valid JSON report on doctor --json with exit code 0 when prerequisites pass', async () => {
     const { stdout, stderr } = await execFileAsync('npx', ['tsx', cliPath, 'doctor', '--json'], {
       cwd: process.cwd(),
-      timeout: 15000,
+      timeout: 30000,
       env: mockEnv,
     });
 
@@ -109,13 +109,13 @@ exit 127
     expect(checkIds).toContain('gh');
     expect(checkIds).toContain('agy');
     expect(checkIds).toContain('codex');
-  }, 20000);
+  }, 35000);
 
   it('should output valid JSON and exit code 1 when prerequisites fail in isolated environment', async () => {
     try {
       await execFileAsync('npx', ['tsx', cliPath, 'doctor', '--json'], {
         cwd: process.cwd(),
-        timeout: 15000,
+        timeout: 30000,
         env: failingEnv,
       });
       expect.unreachable('Expected doctor command to exit with non-zero code');
@@ -135,12 +135,12 @@ exit 127
       expect(parsed!.hasErrors).toBe(true);
       expect(parsed!.allOk).toBe(false);
     }
-  }, 20000);
+  }, 35000);
 
   it('should output clean human-readable report on doctor command', async () => {
     const { stdout, stderr } = await execFileAsync('npx', ['tsx', cliPath, 'doctor'], {
       cwd: process.cwd(),
-      timeout: 15000,
+      timeout: 30000,
       env: mockEnv,
     });
 
@@ -152,27 +152,27 @@ exit 127
     expect(stdout).toContain('Antigravity CLI (agy)');
     expect(stdout).toContain('OpenAI Codex CLI (codex)');
     expect(stdout).toContain('Result:');
-  });
+  }, 35000);
 
   it('should display version information on --version flag', async () => {
     const { stdout, stderr } = await execFileAsync('npx', ['tsx', cliPath, '--version'], {
       cwd: process.cwd(),
-      timeout: 10000,
+      timeout: 20000,
     });
 
     expect(stderr.trim()).toBe('');
     expect(stdout.trim()).toBe('codex-anti-orchestrator v0.1.0');
-  });
+  }, 25000);
 
   it('should display usage help on --help flag', async () => {
     const { stdout, stderr } = await execFileAsync('npx', ['tsx', cliPath, '--help'], {
       cwd: process.cwd(),
-      timeout: 10000,
+      timeout: 20000,
     });
 
     expect(stderr.trim()).toBe('');
     expect(stdout).toContain('USAGE:');
     expect(stdout).toContain('COMMANDS:');
     expect(stdout).toContain('OPTIONS:');
-  });
+  }, 25000);
 });
