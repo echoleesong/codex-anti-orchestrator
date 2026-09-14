@@ -87,8 +87,7 @@ async function resolveRef(commonGitDir: string, ref: string): Promise<string | u
       .split('\n')
       .map((line) => line.trim())
       .find(
-        (line) =>
-          line && !line.startsWith('#') && !line.startsWith('^') && line.endsWith(` ${ref}`)
+        (line) => line && !line.startsWith('#') && !line.startsWith('^') && line.endsWith(` ${ref}`)
       );
     if (!match) return undefined;
     const sha = match.split(' ')[0];
@@ -98,10 +97,13 @@ async function resolveRef(commonGitDir: string, ref: string): Promise<string | u
   }
 }
 
-async function resolveRepositoryContext(worktreePath: string): Promise<{
-  gitDir: string;
-  commonGitDir: string;
-} | undefined> {
+async function resolveRepositoryContext(worktreePath: string): Promise<
+  | {
+      gitDir: string;
+      commonGitDir: string;
+    }
+  | undefined
+> {
   const gitDir = await resolveGitDirectory(worktreePath);
   if (!gitDir) return undefined;
   return {
@@ -249,7 +251,9 @@ export class CodexReviewBudgetStore {
     try {
       parsed = JSON.parse(raw) as BudgetState;
     } catch (error) {
-      throw new Error(`Codex review budget state is malformed; refusing to reset quota: ${String(error)}`);
+      throw new Error(
+        `Codex review budget state is malformed; refusing to reset quota: ${String(error)}`
+      );
     }
 
     if (parsed.version !== CACHE_VERSION || !parsed.tasks || typeof parsed.tasks !== 'object') {
@@ -294,7 +298,9 @@ export class CodexReviewBudgetStore {
     }
 
     if (!acquired) {
-      throw new Error('Unable to acquire Codex review budget lock; refusing to spend untracked quota.');
+      throw new Error(
+        'Unable to acquire Codex review budget lock; refusing to spend untracked quota.'
+      );
     }
 
     try {
