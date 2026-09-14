@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -62,12 +62,15 @@ describe('Codex review budget and cache', () => {
   });
 
   it('reuses the same review identity and invalidates cache when base or HEAD changes', async () => {
-    const worktree = await createFakeWorktree('2'.repeat(40));
+    const baseSha = 'a'.repeat(40);
+    const worktree = await createFakeWorktree('2'.repeat(40), baseSha);
     const cacheFile = path.join(worktree, 'state', 'review-cache.json');
     let modelCalls = 0;
+    const observedBases: string[] = [];
 
-    const executor: CommandExecutor = async () => {
+    const executor: CommandExecutor = async (_file, args) => {
       modelCalls += 1;
+      observedBases.push(args[args.indexOf('--base') + 1] || '');
       return {
         exitCode: 0,
         stdout: JSON.stringify({
@@ -89,10 +92,13 @@ describe('Codex review budget and cache', () => {
     expect(first.verdict).toBe('APPROVE');
     expect(cached).toEqual(first);
     expect(modelCalls).toBe(1);
+    expect(observedBases).toEqual([baseSha]);
 
-    await writeFile(path.join(worktree, '.git', 'refs', 'heads', 'main'), `${'b'.repeat(40)}\n`);
+    const movedBaseSha = 'b'.repeat(40);
+    await writeFile(path.join(worktree, '.git', 'refs', 'heads', 'main'), `${movedBaseSha}\n`);
     expect((await adapter.review(options)).verdict).toBe('APPROVE');
     expect(modelCalls).toBe(2);
+    expect(observedBases.at(-1)).toBe(movedBaseSha);
 
     await writeFile(path.join(worktree, '.git', 'HEAD'), `${'3'.repeat(40)}\n`);
     expect((await adapter.review(options)).verdict).toBe('APPROVE');
@@ -156,5 +162,56 @@ describe('Codex review budget and cache', () => {
     const identity = await store.identify(worktree, 'main', 'task');
 
     await expect(store.reserveCall(identity)).rejects.toThrow('refusing to reset quota');
+  });
+
+  it('rejects a poisoned cached APPROVE instead of returning it', async () => {
+    const worktree = await createFakeWorktree('6'.repeat(40));
+    const cacheFile = path.join(worktree, 'state', 'review-cache.json');
+    const store = new CodexReviewBudgetStore({ cacheFile });
+    const identity = await store.identify(worktree, 'main', 'task');
+    expect(identity.reviewKey).toBeDefined();
+
+    await mkdir(path.dirname(cacheFile), { recursive: true });
+    await writeFile(
+      cacheFile,
+      JSON.stringify({
+        version: 2,
+        tasks: {
+          [identity.taskKey]: {
+            calls: 1,
+            reviews: {
+              [identity.reviewKey!]: {
+                savedAt: new Date().toISOString(),
+                result: {
+                  verdict: 'APPROVE',
+                  summary: 'poisoned',
+                  blockingIssues: ['hidden blocker'],
+                  warnings: [],
+                  humanVerificationChecklist: [],
+                  parsedCleanly: true,
+                },
+              },
+            },
+          },
+        },
+      })
+    );
+
+    await expect(store.getCached(identity)).rejects.toThrow('invalid cached review result');
+  });
+
+  it('stores the default budget file under an explicit state directory', async () => {
+    const worktree = await createFakeWorktree('7'.repeat(40));
+    const stateDir = await mkdtemp(path.join(tmpdir(), 'codex-budget-state-'));
+    cleanupPaths.push(stateDir);
+    const store = new CodexReviewBudgetStore({ stateDir });
+    const identity = await store.identify(worktree, 'main', 'task');
+
+    await store.reserveCall(identity);
+
+    const persisted = JSON.parse(
+      await readFile(path.join(stateDir, 'codex-review-cache-v2.json'), 'utf8')
+    ) as { version: number };
+    expect(persisted.version).toBe(2);
   });
 });
