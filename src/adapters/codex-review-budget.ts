@@ -8,6 +8,7 @@ const CACHE_VERSION = 2;
 const LOCK_RETRY_DELAY_MS = 25;
 const LOCK_MAX_ATTEMPTS = 200;
 const STALE_LOCK_MS = 30_000;
+const CACHE_FILE_NAME = 'codex-review-cache-v2.json';
 export const DEFAULT_MAX_CODEX_CALLS_PER_TASK = 3;
 
 interface CachedReviewEntry {
@@ -27,6 +28,7 @@ interface BudgetState {
 
 export interface ReviewIdentity {
   taskKey: string;
+  cacheFile: string;
   reviewKey?: string;
   headSha?: string;
   baseSha?: string;
@@ -106,6 +108,11 @@ function validateBudgetState(value: unknown): BudgetState {
   }
 
   return value as BudgetState;
+}
+
+function inferStateDirFromWorktree(worktreePath: string): string | undefined {
+  const worktreesDir = path.dirname(path.resolve(worktreePath));
+  return path.basename(worktreesDir) === 'worktrees' ? path.dirname(worktreesDir) : undefined;
 }
 
 async function resolveGitDirectory(worktreePath: string): Promise<string | undefined> {
@@ -212,20 +219,28 @@ export async function resolveWorktreeRefSha(
 }
 
 export class CodexReviewBudgetStore {
-  private readonly cacheFile: string;
+  private readonly configuredCacheFile?: string;
+  private readonly configuredStateDir?: string;
   private readonly maxCallsPerTask: number;
 
   constructor(options: CodexReviewBudgetStoreOptions = {}) {
-    const stateDir =
-      options.stateDir ||
-      process.env.CODEX_ORCHESTRATOR_STATE_DIR ||
-      path.join(homedir(), '.codex-anti-orchestrator');
-    this.cacheFile = options.cacheFile || path.join(stateDir, 'codex-review-cache-v2.json');
+    this.configuredCacheFile = options.cacheFile;
+    this.configuredStateDir = options.stateDir;
     this.maxCallsPerTask = Math.max(1, options.maxCallsPerTask ?? DEFAULT_MAX_CODEX_CALLS_PER_TASK);
   }
 
   getTaskKey(worktreePath: string): string {
     return hash(path.resolve(worktreePath));
+  }
+
+  private getCacheFile(worktreePath: string): string {
+    if (this.configuredCacheFile) return this.configuredCacheFile;
+    const stateDir =
+      this.configuredStateDir ||
+      inferStateDirFromWorktree(worktreePath) ||
+      process.env.CODEX_ORCHESTRATOR_STATE_DIR ||
+      path.join(homedir(), '.codex-anti-orchestrator');
+    return path.join(stateDir, CACHE_FILE_NAME);
   }
 
   async identify(
@@ -234,36 +249,36 @@ export class CodexReviewBudgetStore {
     taskPrompt?: string
   ): Promise<ReviewIdentity> {
     const taskKey = this.getTaskKey(worktreePath);
+    const cacheFile = this.getCacheFile(worktreePath);
     const [headSha, baseSha] = await Promise.all([
       resolveWorktreeHeadSha(worktreePath),
       resolveWorktreeRefSha(worktreePath, baseBranch),
     ]);
 
     if (!headSha || !baseSha) {
-      return { taskKey, headSha, baseSha, cacheable: false };
+      return { taskKey, cacheFile, headSha, baseSha, cacheable: false };
     }
 
     const reviewKey = hash(
       [String(CACHE_VERSION), baseSha, headSha, taskPrompt?.trim() || ''].join('\0')
     );
-    return { taskKey, reviewKey, headSha, baseSha, cacheable: true };
+    return { taskKey, cacheFile, reviewKey, headSha, baseSha, cacheable: true };
   }
 
   async getCached(identity: ReviewIdentity): Promise<CodexReviewResult | undefined> {
     if (!identity.cacheable || !identity.reviewKey) return undefined;
-    const state = await this.load();
+    const state = await this.load(identity.cacheFile);
     return state.tasks[identity.taskKey]?.reviews[identity.reviewKey]?.result;
   }
 
-  async reserveCall(task: string | ReviewIdentity): Promise<{
+  async reserveCall(identity: ReviewIdentity): Promise<{
     allowed: boolean;
     calls: number;
     maxCalls: number;
   }> {
-    const taskKey = typeof task === 'string' ? task : task.taskKey;
-    return this.withWriteLock(async () => {
-      const state = await this.load();
-      const taskBudget = state.tasks[taskKey] || { calls: 0, reviews: {} };
+    return this.withWriteLock(identity.cacheFile, async () => {
+      const state = await this.load(identity.cacheFile);
+      const taskBudget = state.tasks[identity.taskKey] || { calls: 0, reviews: {} };
       if (taskBudget.calls >= this.maxCallsPerTask) {
         return {
           allowed: false,
@@ -273,8 +288,8 @@ export class CodexReviewBudgetStore {
       }
 
       taskBudget.calls += 1;
-      state.tasks[taskKey] = taskBudget;
-      await this.save(state);
+      state.tasks[identity.taskKey] = taskBudget;
+      await this.save(identity.cacheFile, state);
       return {
         allowed: true,
         calls: taskBudget.calls,
@@ -286,22 +301,22 @@ export class CodexReviewBudgetStore {
   async store(identity: ReviewIdentity, result: CodexReviewResult): Promise<void> {
     if (!identity.cacheable || !identity.reviewKey || !result.parsedCleanly) return;
 
-    await this.withWriteLock(async () => {
-      const state = await this.load();
+    await this.withWriteLock(identity.cacheFile, async () => {
+      const state = await this.load(identity.cacheFile);
       const task = state.tasks[identity.taskKey] || { calls: 0, reviews: {} };
       task.reviews[identity.reviewKey!] = {
         savedAt: new Date().toISOString(),
         result,
       };
       state.tasks[identity.taskKey] = task;
-      await this.save(state);
+      await this.save(identity.cacheFile, state);
     });
   }
 
-  private async load(): Promise<BudgetState> {
+  private async load(cacheFile: string): Promise<BudgetState> {
     let raw: string;
     try {
-      raw = await readFile(this.cacheFile, 'utf8');
+      raw = await readFile(cacheFile, 'utf8');
     } catch (error) {
       if (errorCode(error) === 'ENOENT') {
         return { version: CACHE_VERSION, tasks: {} };
@@ -325,16 +340,16 @@ export class CodexReviewBudgetStore {
     }
   }
 
-  private async save(state: BudgetState): Promise<void> {
-    await mkdir(path.dirname(this.cacheFile), { recursive: true, mode: 0o700 });
-    const tempFile = `${this.cacheFile}.${process.pid}.${Date.now()}.tmp`;
+  private async save(cacheFile: string, state: BudgetState): Promise<void> {
+    await mkdir(path.dirname(cacheFile), { recursive: true, mode: 0o700 });
+    const tempFile = `${cacheFile}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tempFile, JSON.stringify(state, null, 2), { mode: 0o600 });
-    await rename(tempFile, this.cacheFile);
+    await rename(tempFile, cacheFile);
   }
 
-  private async withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
-    const lockDir = `${this.cacheFile}.lock`;
-    await mkdir(path.dirname(this.cacheFile), { recursive: true, mode: 0o700 });
+  private async withWriteLock<T>(cacheFile: string, operation: () => Promise<T>): Promise<T> {
+    const lockDir = `${cacheFile}.lock`;
+    await mkdir(path.dirname(cacheFile), { recursive: true, mode: 0o700 });
 
     let acquired = false;
     for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt += 1) {
