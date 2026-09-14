@@ -121,8 +121,11 @@ export function parseCodexReviewOutput(
       };
     }
 
-    if (/^No findings\.(?:\s|$)/i.test(trimmed) && nativeApprovalChecklist.length > 0) {
-      const residualRisk = trimmed.replace(/^No findings\.\s*/i, '').trim();
+    const nativeApprovalMatch = trimmed.match(
+      /^(?:No findings\.|I did not identify any discrete introduced bugs in the diff\.)(?:\s|$)/i
+    );
+    if (nativeApprovalMatch && nativeApprovalChecklist.length > 0) {
+      const residualRisk = trimmed.slice(nativeApprovalMatch[0].length).trim();
       return {
         verdict: 'APPROVE',
         summary: 'Codex review found no actionable issues.',

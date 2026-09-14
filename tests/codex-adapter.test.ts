@@ -186,6 +186,22 @@ Thanks!
       ]);
       expect(withChecklist.warnings).toEqual(['Residual risk: browser QA pending.']);
     });
+
+    it('should accept the native discrete-bugs-free wording with a task-derived checklist', () => {
+      const output =
+        'I did not identify any discrete introduced bugs in the diff. The API and client changes appear consistent.';
+      const result = parseCodexReviewOutput(output, [
+        'Create a timer session and verify it starts immediately.',
+      ]);
+
+      expect(result.verdict).toBe('APPROVE');
+      expect(result.parsedCleanly).toBe(true);
+      expect(result.blockingIssues).toEqual([]);
+      expect(result.humanVerificationChecklist).toEqual([
+        'Create a timer session and verify it starts immediately.',
+      ]);
+      expect(result.warnings).toEqual(['The API and client changes appear consistent.']);
+    });
   });
 
   describe('CodexAdapter execution', () => {
