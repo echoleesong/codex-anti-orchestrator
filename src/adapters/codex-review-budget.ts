@@ -191,22 +191,31 @@ export class CodexReviewBudgetStore {
     return state.tasks[identity.taskKey]?.reviews[identity.reviewKey]?.result;
   }
 
-  async reserveCall(taskKey: string): Promise<{
+  async reserveCall(task: string | ReviewIdentity): Promise<{
     allowed: boolean;
     calls: number;
     maxCalls: number;
   }> {
+    const taskKey = typeof task === 'string' ? task : task.taskKey;
     return this.withWriteLock(async () => {
       const state = await this.load();
-      const task = state.tasks[taskKey] || { calls: 0, reviews: {} };
-      if (task.calls >= this.maxCallsPerTask) {
-        return { allowed: false, calls: task.calls, maxCalls: this.maxCallsPerTask };
+      const taskBudget = state.tasks[taskKey] || { calls: 0, reviews: {} };
+      if (taskBudget.calls >= this.maxCallsPerTask) {
+        return {
+          allowed: false,
+          calls: taskBudget.calls,
+          maxCalls: this.maxCallsPerTask,
+        };
       }
 
-      task.calls += 1;
-      state.tasks[taskKey] = task;
+      taskBudget.calls += 1;
+      state.tasks[taskKey] = taskBudget;
       await this.save(state);
-      return { allowed: true, calls: task.calls, maxCalls: this.maxCallsPerTask };
+      return {
+        allowed: true,
+        calls: taskBudget.calls,
+        maxCalls: this.maxCallsPerTask,
+      };
     });
   }
 
