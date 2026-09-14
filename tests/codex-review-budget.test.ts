@@ -20,7 +20,9 @@ async function createFakeWorktree(headSha: string): Promise<string> {
 }
 
 afterEach(async () => {
-  await Promise.all(cleanupPaths.splice(0).map((entry) => rm(entry, { recursive: true, force: true })));
+  await Promise.all(
+    cleanupPaths.splice(0).map((entry) => rm(entry, { recursive: true, force: true }))
+  );
 });
 
 describe('Codex review budget and cache', () => {
