@@ -11,6 +11,7 @@ import { defaultExecutor } from '../utils/exec.js';
 import {
   CodexReviewBudgetStore,
   type CodexReviewBudgetStoreOptions,
+  type ReviewIdentity,
 } from './codex-review-budget.js';
 
 const VALID_VERDICTS: readonly CodexVerdict[] = [
@@ -298,6 +299,18 @@ export function buildCodexReviewPrompt(
   return lines.join('\n');
 }
 
+function budgetFailureResult(error: unknown): CodexReviewResult {
+  return {
+    verdict: 'NEEDS_USER_DECISION',
+    summary: `Codex review budget state is unavailable or unsafe: ${error instanceof Error ? error.message : String(error)}. Failing closed without invoking Codex.`,
+    blockingIssues: [],
+    warnings: [],
+    humanVerificationChecklist: [],
+    parsedCleanly: false,
+    rawOutput: '',
+  };
+}
+
 export class CodexAdapter {
   private executor: CommandExecutor;
   private reviewBudgetStore: CodexReviewBudgetStore;
@@ -315,13 +328,14 @@ export class CodexAdapter {
     const timeoutMs = options.timeoutMs ?? 600000;
     const baseBranch = options.baseBranch || 'main';
 
-    const reviewIdentity = await this.reviewBudgetStore.identify(
-      options.worktreePath,
-      baseBranch,
-      options.taskPrompt
-    );
+    let reviewIdentity: ReviewIdentity;
+    try {
+      reviewIdentity = await this.reviewBudgetStore.identify(
+        options.worktreePath,
+        baseBranch,
+        options.taskPrompt
+      );
 
-    if (reviewIdentity) {
       const cached = await this.reviewBudgetStore.getCached(reviewIdentity);
       if (cached) return cached;
 
@@ -337,8 +351,11 @@ export class CodexAdapter {
           rawOutput: '',
         };
       }
+    } catch (error) {
+      return budgetFailureResult(error);
     }
 
+    const reviewBase = reviewIdentity.baseSha || baseBranch;
     const outputDir = await mkdtemp(path.join(tmpdir(), 'codex-anti-review-'));
     const schemaPath = path.join(outputDir, 'schema.json');
     const lastMessagePath = path.join(outputDir, 'last-message.json');
@@ -350,7 +367,7 @@ export class CodexAdapter {
         'exec',
         'review',
         '--base',
-        baseBranch,
+        reviewBase,
         '--ignore-user-config',
         '--ephemeral',
         '--disable',
@@ -418,8 +435,20 @@ export class CodexAdapter {
           ]
         : [];
       const result = parseCodexReviewOutput(reviewOutput, nativeApprovalChecklist);
-      if (reviewIdentity && result.parsedCleanly) {
-        await this.reviewBudgetStore.store(reviewIdentity, result);
+      if (result.parsedCleanly) {
+        try {
+          await this.reviewBudgetStore.store(reviewIdentity, result);
+        } catch (error) {
+          return {
+            verdict: 'NEEDS_USER_DECISION',
+            summary: `Codex review completed but its durable review cache could not be updated safely: ${error instanceof Error ? error.message : String(error)}. Failing closed instead of allowing an automatic re-review.`,
+            blockingIssues: result.blockingIssues,
+            warnings: result.warnings,
+            humanVerificationChecklist: result.humanVerificationChecklist,
+            parsedCleanly: false,
+            rawOutput: result.rawOutput,
+          };
+        }
       }
       return result;
     } finally {
