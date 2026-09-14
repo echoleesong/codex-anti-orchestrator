@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import type { CodexReviewResult } from '../types.js';
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const LOCK_RETRY_DELAY_MS = 25;
 const LOCK_MAX_ATTEMPTS = 200;
 const STALE_LOCK_MS = 30_000;
@@ -35,6 +35,7 @@ export interface ReviewIdentity {
 
 export interface CodexReviewBudgetStoreOptions {
   cacheFile?: string;
+  stateDir?: string;
   maxCallsPerTask?: number;
 }
 
@@ -46,6 +47,65 @@ function errorCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'code' in error
     ? String((error as { code?: unknown }).code)
     : undefined;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isValidCachedReviewResult(value: unknown): value is CodexReviewResult {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Record<string, unknown>;
+  if (!['APPROVE', 'CHANGES_REQUIRED', 'NEEDS_USER_DECISION'].includes(String(result.verdict))) {
+    return false;
+  }
+  if (typeof result.summary !== 'string' || result.parsedCleanly !== true) return false;
+  if (!isStringArray(result.blockingIssues)) return false;
+  if (!isStringArray(result.warnings)) return false;
+  if (!isStringArray(result.humanVerificationChecklist)) return false;
+  if (result.rawOutput !== undefined && typeof result.rawOutput !== 'string') return false;
+  if (
+    result.verdict === 'APPROVE' &&
+    (result.blockingIssues.length !== 0 || result.humanVerificationChecklist.length === 0)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function validateBudgetState(value: unknown): BudgetState {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Codex review budget state is not an object.');
+  }
+  const state = value as Record<string, unknown>;
+  if (state.version !== CACHE_VERSION || !state.tasks || typeof state.tasks !== 'object') {
+    throw new Error('Codex review budget state has an invalid version or task map.');
+  }
+
+  for (const taskValue of Object.values(state.tasks as Record<string, unknown>)) {
+    if (!taskValue || typeof taskValue !== 'object') {
+      throw new Error('Codex review budget contains an invalid task entry.');
+    }
+    const task = taskValue as Record<string, unknown>;
+    if (!Number.isSafeInteger(task.calls) || Number(task.calls) < 0) {
+      throw new Error('Codex review budget contains an invalid call count.');
+    }
+    if (!task.reviews || typeof task.reviews !== 'object') {
+      throw new Error('Codex review budget contains an invalid review map.');
+    }
+
+    for (const reviewValue of Object.values(task.reviews as Record<string, unknown>)) {
+      if (!reviewValue || typeof reviewValue !== 'object') {
+        throw new Error('Codex review budget contains an invalid cached review entry.');
+      }
+      const review = reviewValue as Record<string, unknown>;
+      if (typeof review.savedAt !== 'string' || !isValidCachedReviewResult(review.result)) {
+        throw new Error('Codex review budget contains an invalid cached review result.');
+      }
+    }
+  }
+
+  return value as BudgetState;
 }
 
 async function resolveGitDirectory(worktreePath: string): Promise<string | undefined> {
@@ -156,9 +216,11 @@ export class CodexReviewBudgetStore {
   private readonly maxCallsPerTask: number;
 
   constructor(options: CodexReviewBudgetStoreOptions = {}) {
-    this.cacheFile =
-      options.cacheFile ||
-      path.join(homedir(), '.codex-anti-orchestrator', 'codex-review-cache-v1.json');
+    const stateDir =
+      options.stateDir ||
+      process.env.CODEX_ORCHESTRATOR_STATE_DIR ||
+      path.join(homedir(), '.codex-anti-orchestrator');
+    this.cacheFile = options.cacheFile || path.join(stateDir, 'codex-review-cache-v2.json');
     this.maxCallsPerTask = Math.max(1, options.maxCallsPerTask ?? DEFAULT_MAX_CODEX_CALLS_PER_TASK);
   }
 
@@ -247,23 +309,24 @@ export class CodexReviewBudgetStore {
       throw new Error(`Unable to read Codex review budget state: ${String(error)}`);
     }
 
-    let parsed: BudgetState;
+    let parsed: unknown;
     try {
-      parsed = JSON.parse(raw) as BudgetState;
+      parsed = JSON.parse(raw);
     } catch (error) {
       throw new Error(
         `Codex review budget state is malformed; refusing to reset quota: ${String(error)}`
       );
     }
 
-    if (parsed.version !== CACHE_VERSION || !parsed.tasks || typeof parsed.tasks !== 'object') {
-      throw new Error('Codex review budget state is invalid; refusing to reset quota.');
+    try {
+      return validateBudgetState(parsed);
+    } catch (error) {
+      throw new Error(`Codex review budget state is invalid; refusing to reset quota: ${String(error)}`);
     }
-    return parsed;
   }
 
   private async save(state: BudgetState): Promise<void> {
-    await mkdir(path.dirname(this.cacheFile), { recursive: true });
+    await mkdir(path.dirname(this.cacheFile), { recursive: true, mode: 0o700 });
     const tempFile = `${this.cacheFile}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tempFile, JSON.stringify(state, null, 2), { mode: 0o600 });
     await rename(tempFile, this.cacheFile);
@@ -271,7 +334,7 @@ export class CodexReviewBudgetStore {
 
   private async withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
     const lockDir = `${this.cacheFile}.lock`;
-    await mkdir(path.dirname(this.cacheFile), { recursive: true });
+    await mkdir(path.dirname(this.cacheFile), { recursive: true, mode: 0o700 });
 
     let acquired = false;
     for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt += 1) {
