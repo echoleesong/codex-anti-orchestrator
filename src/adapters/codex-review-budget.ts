@@ -75,7 +75,10 @@ async function resolveRef(commonGitDir: string, ref: string): Promise<string | u
     const match = packedRefs
       .split('\n')
       .map((line) => line.trim())
-      .find((line) => line && !line.startsWith('#') && !line.startsWith('^') && line.endsWith(` ${ref}`));
+      .find(
+        (line) =>
+          line && !line.startsWith('#') && !line.startsWith('^') && line.endsWith(` ${ref}`)
+      );
     if (!match) return undefined;
     const sha = match.split(' ')[0];
     return /^[0-9a-f]{40,64}$/i.test(sha) ? sha : undefined;
