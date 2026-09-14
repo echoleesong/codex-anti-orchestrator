@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type {
   CodexReviewOptions,
   CodexReviewResult,
@@ -12,11 +15,47 @@ const VALID_VERDICTS: readonly CodexVerdict[] = [
   'NEEDS_USER_DECISION',
 ];
 
+const CODEX_REVIEW_OUTPUT_SCHEMA = {
+  type: 'object',
+  description:
+    'Strict result for a read-only code review. APPROVE requires zero blocking issues and at least one concrete human verification check. CHANGES_REQUIRED is for actionable defects. NEEDS_USER_DECISION is only for genuine ambiguity or conflicting requirements.',
+  additionalProperties: false,
+  required: ['verdict', 'summary', 'blockingIssues', 'warnings', 'humanVerificationChecklist'],
+  properties: {
+    verdict: {
+      type: 'string',
+      description: 'The final review verdict.',
+      enum: ['APPROVE', 'CHANGES_REQUIRED', 'NEEDS_USER_DECISION'],
+    },
+    summary: { type: 'string', description: 'A concise summary grounded in the reviewed diff.' },
+    blockingIssues: {
+      type: 'array',
+      description:
+        'Actionable correctness, security, or regression defects. Must be empty for APPROVE.',
+      items: { type: 'string' },
+    },
+    warnings: {
+      type: 'array',
+      description: 'Non-blocking review observations.',
+      items: { type: 'string' },
+    },
+    humanVerificationChecklist: {
+      type: 'array',
+      description:
+        'Specific observable checks for the changed behavior in a running local application. Must contain at least one item for APPROVE.',
+      items: { type: 'string' },
+    },
+  },
+} as const;
+
 /**
  * Extracts and parses structured review output from Codex.
  * Guarantees fail-safe fallback to NEEDS_USER_DECISION on malformed, missing, or invalid output.
  */
-export function parseCodexReviewOutput(rawOutput: string): CodexReviewResult {
+export function parseCodexReviewOutput(
+  rawOutput: string,
+  nativeApprovalChecklist: string[] = []
+): CodexReviewResult {
   const fallbackResult: CodexReviewResult = {
     verdict: 'NEEDS_USER_DECISION',
     summary: 'Codex review output was empty, missing, or malformed. Failing safe to human review.',
@@ -62,6 +101,42 @@ export function parseCodexReviewOutput(rawOutput: string): CodexReviewResult {
   }
 
   if (!parsed || typeof parsed !== 'object') {
+    const nativeFindings = trimmed
+      .split(/\n(?=- \[P[0-3]\] )/)
+      .filter((block) => /^- \[P[0-3]\] /.test(block.trim()));
+    if (nativeFindings.length > 0) {
+      const firstFindingIndex = trimmed.search(/^- \[P[0-3]\] /m);
+      const preamble = trimmed
+        .slice(0, firstFindingIndex)
+        .replace(/\s*Full review comments:\s*$/i, '')
+        .trim();
+      return {
+        verdict: 'CHANGES_REQUIRED',
+        summary: preamble || `Codex review found ${nativeFindings.length} actionable issue(s).`,
+        blockingIssues: nativeFindings.map((finding) => finding.trim()),
+        warnings: [],
+        humanVerificationChecklist: [],
+        parsedCleanly: true,
+        rawOutput,
+      };
+    }
+
+    const nativeApprovalMatch = trimmed.match(
+      /^(?:No findings\.|I did not identify any discrete introduced bugs in the diff\.)(?:\s|$)/i
+    );
+    if (nativeApprovalMatch && nativeApprovalChecklist.length > 0) {
+      const residualRisk = trimmed.slice(nativeApprovalMatch[0].length).trim();
+      return {
+        verdict: 'APPROVE',
+        summary: 'Codex review found no actionable issues.',
+        blockingIssues: [],
+        warnings: residualRisk ? [residualRisk] : [],
+        humanVerificationChecklist: nativeApprovalChecklist,
+        parsedCleanly: true,
+        rawOutput,
+      };
+    }
+
     return {
       ...fallbackResult,
       summary:
@@ -247,35 +322,96 @@ export class CodexAdapter {
    */
   async review(options: CodexReviewOptions): Promise<CodexReviewResult> {
     const executor = options.executor || this.executor;
-    const timeoutMs = options.timeoutMs ?? 120000; // 2 minutes default
+    // Repository-wide reviews routinely exceed two minutes. A short timeout can
+    // make Codex handle SIGTERM and exit 0 before emitting its final response,
+    // which is otherwise indistinguishable from a successful empty review.
+    const timeoutMs = options.timeoutMs ?? 600000;
 
-    const prompt = buildCodexReviewPrompt({
-      baseBranch: options.baseBranch,
-      targetBranch: options.prNumberOrBranch,
-      diff: options.diff,
-    });
+    const outputDir = await mkdtemp(path.join(tmpdir(), 'codex-anti-review-'));
+    const schemaPath = path.join(outputDir, 'schema.json');
+    const lastMessagePath = path.join(outputDir, 'last-message.json');
 
-    // Strict command invariant: uses 'codex exec --sandbox read-only <prompt>'
-    const args = ['exec', '--sandbox', 'read-only', prompt];
+    try {
+      await writeFile(schemaPath, JSON.stringify(CODEX_REVIEW_OUTPUT_SCHEMA), { mode: 0o600 });
 
-    const execResult = await executor('codex', args, {
-      cwd: options.worktreePath,
-      timeoutMs,
-      rejectForbiddenFlags: true,
-    });
+      // The dedicated review subcommand computes the branch diff itself and is
+      // read-only. Keep it isolated from unrelated user plugins and tools, and
+      // persist the final message because stdout is not a stable API across
+      // Codex CLI versions or graceful timeout handling.
+      const args = [
+        'exec',
+        'review',
+        '--base',
+        options.baseBranch || 'main',
+        '--ignore-user-config',
+        '--ephemeral',
+        '--disable',
+        'plugins',
+        '--disable',
+        'apps',
+        '--disable',
+        'memories',
+        '--disable',
+        'multi_agent',
+        '--disable',
+        'browser_use',
+        '--disable',
+        'computer_use',
+        '--disable',
+        'image_generation',
+        '--disable',
+        'hooks',
+        '--output-schema',
+        schemaPath,
+        '--output-last-message',
+        lastMessagePath,
+      ];
 
-    if (execResult.error || execResult.exitCode !== 0) {
-      return {
-        verdict: 'NEEDS_USER_DECISION',
-        summary: `Codex review execution error (exit code ${execResult.exitCode}): ${execResult.stderr.trim() || execResult.stdout.trim() || execResult.error?.message || 'Unknown error'}`,
-        blockingIssues: [],
-        warnings: [],
-        humanVerificationChecklist: [],
-        parsedCleanly: false,
-        rawOutput: execResult.stdout || execResult.stderr,
-      };
+      const execResult = await executor('codex', args, {
+        cwd: options.worktreePath,
+        timeoutMs,
+        rejectForbiddenFlags: true,
+      });
+      const persistedOutput = await readFile(lastMessagePath, 'utf8').catch(() => '');
+      const reviewOutput = persistedOutput.trim() ? persistedOutput : execResult.stdout;
+
+      if (execResult.timedOut || execResult.error || execResult.exitCode !== 0) {
+        const executionReason = execResult.timedOut
+          ? `timed out after ${timeoutMs}ms`
+          : `exit code ${execResult.exitCode}`;
+        return {
+          verdict: 'NEEDS_USER_DECISION',
+          summary: `Codex review execution error (${executionReason}): ${execResult.stderr.trim() || reviewOutput.trim() || execResult.error?.message || 'Unknown error'}`,
+          blockingIssues: [],
+          warnings: [],
+          humanVerificationChecklist: [],
+          parsedCleanly: false,
+          rawOutput: reviewOutput || execResult.stderr,
+        };
+      }
+
+      if (!reviewOutput.trim()) {
+        return {
+          verdict: 'NEEDS_USER_DECISION',
+          summary:
+            'Codex review process exited successfully without a final response in either the output file or stdout. Failing safe to human review.',
+          blockingIssues: [],
+          warnings: [],
+          humanVerificationChecklist: [],
+          parsedCleanly: false,
+          rawOutput: '',
+        };
+      }
+
+      const taskRequirement = options.taskPrompt?.trim();
+      const nativeApprovalChecklist = taskRequirement
+        ? [
+            `In the running local application, verify this reviewed requirement is satisfied without runtime or console errors: ${taskRequirement.slice(0, 600)}`,
+          ]
+        : [];
+      return parseCodexReviewOutput(reviewOutput, nativeApprovalChecklist);
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
     }
-
-    return parseCodexReviewOutput(execResult.stdout);
   }
 }

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { prepareAgyProjectConfig } from '../security/agy-project-config.js';
 import { validateStateDirIsolation } from '../security/path-validator.js';
 import type {
   AgyExecutionResult,
@@ -77,9 +78,19 @@ export function parseLiveVerificationOutput(rawOutput: string): LiveVerification
 
 export class AgyAdapter {
   private executor: CommandExecutor;
+  private configureProject: boolean;
+  private agyConfigRoot?: string;
 
-  constructor(executor: CommandExecutor = defaultExecutor) {
+  constructor(
+    executor: CommandExecutor = defaultExecutor,
+    // Injected executors are the test seam and must not mutate the user's Agy config by default.
+    // A wrapper that still launches real Agy should explicitly pass true.
+    configureProject = executor === defaultExecutor,
+    agyConfigRoot?: string
+  ) {
     this.executor = executor;
+    this.configureProject = configureProject;
+    this.agyConfigRoot = agyConfigRoot;
   }
 
   /**
@@ -128,6 +139,32 @@ export class AgyAdapter {
   }
 
   /**
+   * Builds a stateless follow-up when agy returned successfully before producing files.
+   * Prior output is bounded because it is also persisted in the task event feed.
+   */
+  buildDevelopmentContinuationPrompt(
+    originalPrompt: string,
+    previousOutput: string,
+    attempt: number,
+    maximumAttempts: number
+  ): string {
+    const boundedOutput = previousOutput.trim().slice(0, 4_000) || '(no textual response)';
+    return [
+      '### Original Task Instructions',
+      originalPrompt.trim(),
+      '',
+      `### Bounded Development Continuation (${attempt}/${maximumAttempts})`,
+      'The previous Antigravity invocation exited successfully, but the isolated worktree remained unchanged.',
+      'Continue the implementation now. Use completed command observations, inspect only what is still necessary, and edit files in this worktree.',
+      'Do not stop after announcing that you are waiting for command output. Do not merely restate a plan.',
+      'If execution is genuinely blocked, report the concrete blocker instead of claiming completion.',
+      '',
+      '### Previous Antigravity Response',
+      boundedOutput,
+    ].join('\n');
+  }
+
+  /**
    * Builds the fix prompt for agy incorporating review feedback and test failures.
    */
   buildFixPrompt(originalPrompt: string, feedback: AgyFixFeedback): string {
@@ -168,6 +205,9 @@ export class AgyAdapter {
     lines.push('1. Resolve all blocking issues and failing tests without introducing regressions.');
     lines.push('2. Do not mutate files outside this isolated worktree.');
     lines.push('3. Verify fixes locally before finishing.');
+    lines.push(
+      '4. Start with built-in read_file/write_file tools and make the requested edits before running terminal exploration commands. Do not begin with git status, git diff, ls, or a restatement of the plan.'
+    );
 
     return lines.join('\n');
   }
@@ -278,8 +318,14 @@ export class AgyAdapter {
 
     this.validateWorktree(options.worktreePath, options.targetRepoPath);
 
+    const args: string[] = [];
+    if (this.configureProject) {
+      const project = prepareAgyProjectConfig(options.worktreePath, this.agyConfigRoot);
+      args.push('--project', project.projectId);
+    }
+
     // Strict command invariant: uses argument array only, explicitly chooses --sandbox, safe --mode accept-edits, and --print
-    const args: string[] = ['--sandbox', '--mode', 'accept-edits'];
+    args.push('--sandbox', '--mode', 'accept-edits');
 
     if (options.model !== undefined) {
       const model = this.validateModel(options.model);

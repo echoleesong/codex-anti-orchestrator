@@ -85,6 +85,21 @@ describe('Antigravity CLI (agy) Adapter', () => {
     expect(prompt).toContain('unit test coverage');
   });
 
+  it('builds a bounded no-change continuation prompt with prior output', () => {
+    const adapter = new AgyAdapter();
+    const prompt = adapter.buildDevelopmentContinuationPrompt(
+      'Implement the timer refactor',
+      'Waiting for command output.',
+      2,
+      3
+    );
+
+    expect(prompt).toContain('Implement the timer refactor');
+    expect(prompt).toContain('Bounded Development Continuation (2/3)');
+    expect(prompt).toContain('Waiting for command output.');
+    expect(prompt).toContain('Do not stop after announcing that you are waiting');
+  });
+
   it('should build structured fix prompts with blocking issues and test failures', () => {
     const adapter = new AgyAdapter();
     const fixPrompt = adapter.buildFixPrompt('Implement OAuth2 login', {
@@ -253,6 +268,27 @@ describe('Antigravity CLI (agy) Adapter', () => {
     expect(call.args).not.toContain('-p');
     expect(call.args).not.toContain('--dangerously-skip-permissions');
     expect(call.options?.cwd).toBe(worktreePath);
+  });
+
+  it('should select a deterministic task-scoped project for real executions', async () => {
+    const capturedCalls: string[][] = [];
+    const mockExecutor: CommandExecutor = async (_file, args) => {
+      capturedCalls.push(args);
+      return { exitCode: 0, stdout: 'done', stderr: '' };
+    };
+    const configRoot = path.join(tempDir, 'agy-config');
+    const adapter = new AgyAdapter(mockExecutor, true, configRoot);
+
+    await adapter.runDevelopment(worktreePath, 'Implement it', {
+      targetRepoPath: testRepoPath,
+    });
+
+    expect(capturedCalls[0][0]).toBe('--project');
+    expect(capturedCalls[0][1]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(capturedCalls[0][2]).toBe('--sandbox');
+    expect(fs.existsSync(path.join(configRoot, 'projects', `${capturedCalls[0][1]}.json`))).toBe(
+      true
+    );
   });
 
   it('should support validated model and bounded print timeout options in agy args', async () => {

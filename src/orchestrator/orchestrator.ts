@@ -55,6 +55,7 @@ const MAX_TASK_EVENTS = 100;
 const MAX_CI_WAIT_HISTORY = 20;
 const DEFAULT_CI_WAIT_ATTEMPTS = 12;
 const DEFAULT_CI_POLL_INTERVAL_MS = 10_000;
+const MAX_AGY_NO_CHANGE_ATTEMPTS = 3;
 
 export class Orchestrator implements IOrchestrator {
   private stateDir: string;
@@ -367,8 +368,10 @@ export class Orchestrator implements IOrchestrator {
 
     const lines = statusRes.stdout
       .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
+      // Porcelain v1 uses two fixed-width status columns followed by one space.
+      // Trimming here would remove a leading blank status column (for example
+      // ` M apps/web/file.ts`) and then slice the first character from the path.
+      .filter((line) => line.length >= 4);
 
     if (lines.length === 0) {
       return false; // No changes to commit
@@ -485,43 +488,75 @@ export class Orchestrator implements IOrchestrator {
             this.recordEvent(task, 'ANTI', 'Development request dispatched to Antigravity.');
             await saveTaskState(this.stateDir, task);
 
-            // 2. Invoke agy in isolated external worktree with --sandbox
-            const agyRes = await agy.runDevelopment(task.worktreePath, task.prompt, {
-              targetRepoPath: task.targetRepoPath,
-              stateDir: this.stateDir,
-              executor,
-            });
-
-            if (!agyRes.success) {
-              transitionTaskState(task, 'FAILED', {
-                reason: 'agy development execution failed.',
-                error: agyRes.error,
+            // 2. Invoke agy in isolated external worktree with --sandbox. Newer agy
+            // versions may return at a tool boundary before editing files, so allow a
+            // small, stateless, fully audited continuation loop. Command failures still
+            // stop immediately and no-change exhaustion remains fail-closed.
+            let committed = false;
+            let previousOutput = '';
+            for (let attempt = 1; attempt <= MAX_AGY_NO_CHANGE_ATTEMPTS; attempt += 1) {
+              const developmentPrompt =
+                attempt === 1
+                  ? task.prompt
+                  : agy.buildDevelopmentContinuationPrompt(
+                      task.prompt,
+                      previousOutput,
+                      attempt,
+                      MAX_AGY_NO_CHANGE_ATTEMPTS
+                    );
+              const agyRes = await agy.runDevelopment(task.worktreePath, developmentPrompt, {
+                targetRepoPath: task.targetRepoPath,
+                stateDir: this.stateDir,
+                executor,
               });
+              task.diagnostics.developmentAttempts =
+                (task.diagnostics.developmentAttempts ?? 0) + 1;
+
+              if (!agyRes.success) {
+                transitionTaskState(task, 'FAILED', {
+                  reason: 'agy development execution failed.',
+                  error: agyRes.error,
+                });
+                await saveTaskState(this.stateDir, task);
+                return task;
+              }
+
+              previousOutput = agyRes.stdout || agyRes.stderr;
+              this.recordEvent(
+                task,
+                'ANTI',
+                `Antigravity development invocation ${attempt}/${MAX_AGY_NO_CHANGE_ATTEMPTS} completed.`,
+                previousOutput
+              );
+
+              // 3. Commit changes as soon as one bounded invocation produces them.
+              committed = await this.commitWorktreeChanges(
+                task.worktreePath,
+                `feat: ${task.prompt.slice(0, 50).trim()}`,
+                executor
+              );
+              if (committed) {
+                task.diagnostics.noChangeDevelopmentAttempts = 0;
+                break;
+              }
+
+              task.diagnostics.noChangeDevelopmentAttempts = attempt;
+              this.recordEvent(
+                task,
+                'ORCHESTRATOR',
+                `No worktree changes after Antigravity development invocation ${attempt}/${MAX_AGY_NO_CHANGE_ATTEMPTS}.`
+              );
               await saveTaskState(this.stateDir, task);
-              return task;
             }
 
-            this.recordEvent(
-              task,
-              'ANTI',
-              'Antigravity development invocation completed.',
-              agyRes.stdout
-            );
-
-            // 3. Commit changes & push branch
-            const committed = await this.commitWorktreeChanges(
-              task.worktreePath,
-              `feat: ${task.prompt.slice(0, 50).trim()}`,
-              executor
-            );
             if (!committed) {
               transitionTaskState(task, 'FAILED', {
-                reason: 'Antigravity completed without producing staged worktree changes.',
+                reason: `Antigravity completed ${MAX_AGY_NO_CHANGE_ATTEMPTS} bounded development invocations without producing staged worktree changes.`,
               });
               this.recordEvent(
                 task,
                 'ORCHESTRATOR',
-                'No changes were committed; PR creation halted.'
+                'No changes were committed after bounded continuation attempts; PR creation halted.'
               );
               await saveTaskState(this.stateDir, task);
               return task;
@@ -581,6 +616,7 @@ export class Orchestrator implements IOrchestrator {
             const reviewResult = await codex.review({
               worktreePath: task.worktreePath,
               baseBranch: task.baseBranch,
+              taskPrompt: task.prompt,
               prNumberOrBranch: task.taskBranch,
               executor,
             });
@@ -636,6 +672,35 @@ export class Orchestrator implements IOrchestrator {
               return task;
             }
 
+            // A review or local-test failure is actionable without consulting
+            // remote CI. New PR commits frequently have no checks yet, and
+            // treating that temporary absence as a human decision blocks the
+            // bounded automated fix loop before it can act on known defects.
+            if (!reviewClean || !testPassed) {
+              if (task.diagnostics.reviewCycles >= task.diagnostics.maxReviewCycles) {
+                transitionTaskState(task, 'NEEDS_USER_DECISION', {
+                  reason: `Reached maximum review cycles (${task.diagnostics.maxReviewCycles}) with unresolved issues.`,
+                });
+                await saveTaskState(this.stateDir, task);
+                return task;
+              }
+
+              task.diagnostics.reviewCycles += 1;
+              transitionTaskState(task, 'AGY_FIXING', {
+                reason: `Attempting automated fix iteration ${task.diagnostics.reviewCycles} of ${task.diagnostics.maxReviewCycles}.`,
+              });
+              task.metadata = {
+                ...(task.metadata || {}),
+                lastFeedback: {
+                  blockingIssues: reviewResult.blockingIssues,
+                  warnings: reviewResult.warnings,
+                  testErrors,
+                },
+              };
+              await saveTaskState(this.stateDir, task);
+              break;
+            }
+
             const ciWait = await this.waitForCI(task, pr, prTarget, executor, loopOptions.ciWait);
             const ciPassing = ciWait.passing;
 
@@ -667,30 +732,9 @@ export class Orchestrator implements IOrchestrator {
               break;
             }
 
-            // If not clean and review cycles exhausted -> NEEDS_USER_DECISION
-            if (task.diagnostics.reviewCycles >= task.diagnostics.maxReviewCycles) {
-              transitionTaskState(task, 'NEEDS_USER_DECISION', {
-                reason: `Reached maximum review cycles (${task.diagnostics.maxReviewCycles}) with unresolved issues.`,
-              });
-              await saveTaskState(this.stateDir, task);
-              return task;
-            }
-
-            // Can attempt fix cycle
-            task.diagnostics.reviewCycles += 1;
-            transitionTaskState(task, 'AGY_FIXING', {
-              reason: `Attempting automated fix iteration ${task.diagnostics.reviewCycles} of ${task.diagnostics.maxReviewCycles}.`,
-            });
-            task.metadata = {
-              ...(task.metadata || {}),
-              lastFeedback: {
-                blockingIssues: reviewResult.blockingIssues,
-                warnings: reviewResult.warnings,
-                testErrors,
-              },
-            };
-            await saveTaskState(this.stateDir, task);
-            break;
+            // testPassed and reviewClean are guaranteed above. Reaching this
+            // point with passing CI always enters live verification.
+            throw new Error('Unreachable review evaluation state after passing automated gates.');
           }
 
           case 'AGY_VALIDATING': {
@@ -776,12 +820,32 @@ export class Orchestrator implements IOrchestrator {
               return task;
             }
 
+            this.recordEvent(
+              task,
+              'ANTI',
+              'Antigravity fix invocation completed.',
+              fixRes.stdout || fixRes.stderr
+            );
+
             // Commit fix changes
-            await this.commitWorktreeChanges(
+            const fixCommitted = await this.commitWorktreeChanges(
               task.worktreePath,
               `fix: resolve review feedback and test failures (cycle ${task.diagnostics.reviewCycles})`,
               executor
             );
+            if (!fixCommitted) {
+              transitionTaskState(task, 'NEEDS_USER_DECISION', {
+                reason:
+                  'Antigravity fix invocation completed without producing a new commit; PR was not updated.',
+              });
+              this.recordEvent(
+                task,
+                'ORCHESTRATOR',
+                'No fix changes were committed; PR update halted.'
+              );
+              await saveTaskState(this.stateDir, task);
+              return task;
+            }
 
             // Push updated changes to task branch
             const pushRes = await pr.pushTaskBranch(task.worktreePath, task.taskBranch, executor);
@@ -897,6 +961,9 @@ export class Orchestrator implements IOrchestrator {
     }
 
     if (task.state === 'FAILED') {
+      if (options.guidance?.trim()) {
+        task.prompt = `${task.prompt}\n\n[User Guidance for Resume]: ${options.guidance.trim()}`;
+      }
       const failedState = task.diagnostics.resumeTargetState;
       const targetState =
         failedState === 'AGY_FIXING' || failedState === 'PR_UPDATING'

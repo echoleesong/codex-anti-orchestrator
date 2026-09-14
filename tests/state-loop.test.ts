@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Orchestrator } from '../src/orchestrator/orchestrator.js';
+import { saveTaskState } from '../src/state/state-machine.js';
 import type { CommandExecutor, ExecOutput } from '../src/types.js';
 
 describe('Controlled State-Loop Execution & Transitions', () => {
@@ -41,12 +42,15 @@ describe('Controlled State-Loop Execution & Transitions', () => {
       agyFail?: boolean;
       pushFail?: boolean;
       worktreeChanges?: boolean;
+      worktreeChangesAfterAgyCalls?: number;
+      agyCallCountRef?: { value: number };
     } = {}
   ): CommandExecutor => {
     let codexCallCount = 0;
     let testCallCount = 0;
     let prChecksCallCount = 0;
     let liveVerificationComplete = false;
+    let agyCallCount = 0;
 
     return async (
       file: string,
@@ -68,10 +72,13 @@ describe('Controlled State-Loop Execution & Transitions', () => {
       }
       if (full.includes('status --porcelain')) {
         if (cwd.includes('worktrees')) {
+          const waitingForAgyChanges =
+            options.worktreeChangesAfterAgyCalls !== undefined &&
+            agyCallCount < options.worktreeChangesAfterAgyCalls;
           return {
             exitCode: 0,
             stdout:
-              options.worktreeChanges === false || liveVerificationComplete
+              options.worktreeChanges === false || waitingForAgyChanges || liveVerificationComplete
                 ? ''
                 : 'M  src/feature.ts\n',
             stderr: '',
@@ -100,6 +107,8 @@ describe('Controlled State-Loop Execution & Transitions', () => {
 
       // agy execution
       if (file === 'agy') {
+        agyCallCount += 1;
+        if (options.agyCallCountRef) options.agyCallCountRef.value = agyCallCount;
         if (options.agyFail) {
           return { exitCode: 1, stdout: '', stderr: 'agy fatal compilation error' };
         }
@@ -354,6 +363,30 @@ describe('Controlled State-Loop Execution & Transitions', () => {
     expect(states[states.length - 1]).toBe('AWAITING_HUMAN_APPROVAL');
   });
 
+  it('halts PR updating when a successful fix invocation produces no changes', async () => {
+    const mock = createMockExecutor({ worktreeChanges: false });
+    const orchestrator = new Orchestrator({ stateDir, allowedBaseDir: tempDir, executor: mock });
+    const task = await orchestrator.createTask({ repoPath, prompt: 'No-op fix task' });
+    task.state = 'AGY_FIXING';
+    task.metadata = {
+      prUrl: 'https://github.com/example-owner/example-repo/pull/99',
+      prNumber: 99,
+      lastFeedback: { blockingIssues: ['Implement the missing behavior.'], warnings: [] },
+    };
+    await saveTaskState(stateDir, task);
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, { executor: mock });
+
+    expect(finishedTask.state).toBe('NEEDS_USER_DECISION');
+    expect(finishedTask.transitions.at(-1)?.reason).toContain('without producing a new commit');
+    expect(finishedTask.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ message: 'Antigravity fix invocation completed.' }),
+        expect.objectContaining({ message: 'No fix changes were committed; PR update halted.' }),
+      ])
+    );
+  });
+
   it('should transition to NEEDS_USER_DECISION when max review cycles is exhausted', async () => {
     const mock = createMockExecutor({
       codexVerdicts: [
@@ -363,6 +396,9 @@ describe('Controlled State-Loop Execution & Transitions', () => {
         'CHANGES_REQUIRED',
       ],
       testsPass: [true, true, true, true],
+      // Known review failures must enter the fix loop without being blocked by
+      // the temporary absence of CI checks on a newly pushed commit.
+      prChecksStatus: 'empty_array',
     });
 
     const orchestrator = new Orchestrator({
@@ -408,7 +444,8 @@ describe('Controlled State-Loop Execution & Transitions', () => {
   });
 
   it('fails before PR creation when Antigravity produces no worktree changes', async () => {
-    const mock = createMockExecutor({ worktreeChanges: false });
+    const agyCallCountRef = { value: 0 };
+    const mock = createMockExecutor({ worktreeChanges: false, agyCallCountRef });
     const orchestrator = new Orchestrator({ stateDir, allowedBaseDir: tempDir, executor: mock });
     const task = await orchestrator.createTask({ repoPath, prompt: 'No-op development task' });
 
@@ -418,6 +455,39 @@ describe('Controlled State-Loop Execution & Transitions', () => {
     expect(finishedTask.diagnostics.lastError).toBeUndefined();
     expect(finishedTask.transitions.at(-1)?.reason).toContain(
       'without producing staged worktree changes'
+    );
+    expect(agyCallCountRef.value).toBe(3);
+    expect(finishedTask.diagnostics.noChangeDevelopmentAttempts).toBe(3);
+  });
+
+  it('continues development after a successful agy response with no worktree changes', async () => {
+    const agyCallCountRef = { value: 0 };
+    const mock = createMockExecutor({
+      worktreeChangesAfterAgyCalls: 2,
+      agyCallCountRef,
+      codexVerdicts: ['APPROVE'],
+      testsPass: [true],
+    });
+    const orchestrator = new Orchestrator({ stateDir, allowedBaseDir: tempDir, executor: mock });
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Continue after tool boundary',
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, {
+      executor: mock,
+      ciWait: { maxAttempts: 2, pollIntervalMs: 0 },
+    });
+
+    expect(finishedTask.state).toBe('AWAITING_HUMAN_APPROVAL');
+    expect(agyCallCountRef.value).toBeGreaterThanOrEqual(2);
+    expect(finishedTask.diagnostics.noChangeDevelopmentAttempts).toBe(0);
+    expect(finishedTask.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: 'No worktree changes after Antigravity development invocation 1/3.',
+        }),
+      ])
     );
   });
 

@@ -181,9 +181,13 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
     const { saveTaskState } = await import('../src/state/state-machine.js');
     await saveTaskState(tempStateDir, task);
 
-    const resumed = await orchestrator.resumeTask(task.id);
+    const resumed = await orchestrator.resumeTask(task.id, {
+      guidance: 'Skip the completed repository-status check and edit the requested files.',
+    });
 
     expect(resumed.state).toBe('WORKTREE_READY');
+    expect(resumed.prompt).toContain('[User Guidance for Resume]');
+    expect(resumed.prompt).toContain('Skip the completed repository-status check');
   });
 
   describe('commitWorktreeChanges Fail-Closed Staging Policy', () => {
@@ -204,6 +208,27 @@ describe('Orchestrator Core & Lifecycle Integration', () => {
         cwd: task.worktreePath,
       }).toString();
       expect(log).toContain('feat: add feature.ts');
+    });
+
+    it('should preserve the first path character for tracked worktree modifications', async () => {
+      const task = await orchestrator.createTask({
+        repoPath: testRepoPath,
+        prompt: 'Tracked staging test',
+      });
+
+      fs.writeFileSync(path.join(task.worktreePath, 'index.ts'), 'console.log("updated");\n');
+      const committed = await orchestrator.commitWorktreeChanges(
+        task.worktreePath,
+        'fix: update tracked file'
+      );
+
+      expect(committed).toBe(true);
+      const changed = execFileSync('git', ['show', '--name-only', '--format='], {
+        cwd: task.worktreePath,
+      })
+        .toString()
+        .trim();
+      expect(changed).toBe('index.ts');
     });
 
     it('should fail closed and reject commit if prohibited sensitive files exist in worktree', async () => {

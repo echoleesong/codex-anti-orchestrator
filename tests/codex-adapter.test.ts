@@ -156,16 +156,64 @@ Thanks!
       expect(res.parsedCleanly).toBe(false);
       expect(res.summary).toContain('Invalid or missing review verdict');
     });
+
+    it('should parse the native codex review finding format as changes required', () => {
+      const output = `The patch breaks typecheck and lint.\n\nFull review comments:\n\n- [P1] Preserve the GET test contract — /repo/route.ts:47-47\n  The existing tests call GET() without an argument.\n\n- [P2] Defer state updates — /repo/view.tsx:89-90\n  The lint rule rejects this effect.`;
+
+      const res = parseCodexReviewOutput(output);
+      expect(res.verdict).toBe('CHANGES_REQUIRED');
+      expect(res.parsedCleanly).toBe(true);
+      expect(res.summary).toContain('breaks typecheck');
+      expect(res.blockingIssues).toHaveLength(2);
+      expect(res.blockingIssues[0]).toContain('Preserve the GET test contract');
+      expect(res.blockingIssues[1]).toContain('Defer state updates');
+    });
+
+    it('should only accept native no-findings output when a task-derived checklist is supplied', () => {
+      const withoutChecklist = parseCodexReviewOutput('No findings.');
+      expect(withoutChecklist.verdict).toBe('NEEDS_USER_DECISION');
+      expect(withoutChecklist.parsedCleanly).toBe(false);
+
+      const withChecklist = parseCodexReviewOutput(
+        'No findings.\n\nResidual risk: browser QA pending.',
+        ['Open the timer and verify it starts immediately.']
+      );
+      expect(withChecklist.verdict).toBe('APPROVE');
+      expect(withChecklist.parsedCleanly).toBe(true);
+      expect(withChecklist.blockingIssues).toEqual([]);
+      expect(withChecklist.humanVerificationChecklist).toEqual([
+        'Open the timer and verify it starts immediately.',
+      ]);
+      expect(withChecklist.warnings).toEqual(['Residual risk: browser QA pending.']);
+    });
+
+    it('should accept the native discrete-bugs-free wording with a task-derived checklist', () => {
+      const output =
+        'I did not identify any discrete introduced bugs in the diff. The API and client changes appear consistent.';
+      const result = parseCodexReviewOutput(output, [
+        'Create a timer session and verify it starts immediately.',
+      ]);
+
+      expect(result.verdict).toBe('APPROVE');
+      expect(result.parsedCleanly).toBe(true);
+      expect(result.blockingIssues).toEqual([]);
+      expect(result.humanVerificationChecklist).toEqual([
+        'Create a timer session and verify it starts immediately.',
+      ]);
+      expect(result.warnings).toEqual(['The API and client changes appear consistent.']);
+    });
   });
 
   describe('CodexAdapter execution', () => {
-    it('should construct arguments strictly matching the codex exec --sandbox read-only contract', async () => {
+    it('should construct an isolated ephemeral codex review with structured file output', async () => {
       const executedFiles: string[] = [];
       const executedArgs: string[][] = [];
+      const executedTimeouts: Array<number | undefined> = [];
 
-      const mockExecutor: CommandExecutor = async (file, args) => {
+      const mockExecutor: CommandExecutor = async (file, args, options) => {
         executedFiles.push(file);
         executedArgs.push(args);
+        executedTimeouts.push(options?.timeoutMs);
         return {
           exitCode: 0,
           stdout: JSON.stringify({
@@ -192,12 +240,16 @@ Thanks!
 
       const args = executedArgs[0];
       expect(args[0]).toBe('exec');
-      expect(args[1]).toBe('--sandbox');
-      expect(args[2]).toBe('read-only');
-      expect(typeof args[3]).toBe('string');
-      expect(args[3]).toContain('strictly read-only code review');
-      expect(args[3]).toContain('anti/task-123');
-      expect(args[3]).toContain('"verdict": "APPROVE"');
+      expect(args[1]).toBe('review');
+      expect(args).toContain('--base');
+      expect(args[args.indexOf('--base') + 1]).toBe('main');
+      expect(args).toContain('--ignore-user-config');
+      expect(args).toContain('--ephemeral');
+      expect(args).toContain('--output-schema');
+      expect(args).toContain('--output-last-message');
+      expect(args).not.toContain('--dangerously-skip-permissions');
+      expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(executedTimeouts).toEqual([600000]);
     });
 
     it('should fail safe to NEEDS_USER_DECISION when codex execution fails or crashes', async () => {
@@ -215,6 +267,26 @@ Thanks!
       expect(res.verdict).toBe('NEEDS_USER_DECISION');
       expect(res.parsedCleanly).toBe(false);
       expect(res.summary).toContain('Codex review execution error');
+    });
+
+    it('should report an explicit execution timeout even when the process exits zero', async () => {
+      const mockExecutor: CommandExecutor = async () => ({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        timedOut: true,
+      });
+
+      const adapter = new CodexAdapter(mockExecutor);
+      const res = await adapter.review({
+        worktreePath: '/fake/worktree',
+        timeoutMs: 1234,
+      });
+
+      expect(res.verdict).toBe('NEEDS_USER_DECISION');
+      expect(res.parsedCleanly).toBe(false);
+      expect(res.summary).toContain('timed out after 1234ms');
+      expect(res.summary).not.toContain('output was empty');
     });
   });
 

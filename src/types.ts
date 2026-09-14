@@ -96,6 +96,10 @@ export interface TaskDiagnostics {
   liveVerification?: LiveVerificationResult;
   ciWaitAttempts?: number;
   ciWaitHistory?: CIWaitObservation[];
+  /** Total Antigravity development invocations across initial runs and resumes. */
+  developmentAttempts?: number;
+  /** Consecutive successful Antigravity invocations that produced no worktree changes. */
+  noChangeDevelopmentAttempts?: number;
 }
 
 export type TaskEventSource = 'ORCHESTRATOR' | 'ANTI' | 'CODEX' | 'GITHUB_CI';
@@ -167,6 +171,7 @@ export interface CodexReviewResult {
 export interface CodexReviewOptions {
   worktreePath: string;
   baseBranch?: string;
+  taskPrompt?: string;
   diff?: string;
   prNumberOrBranch?: string;
   executor?: CommandExecutor;
