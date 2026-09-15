@@ -91,6 +91,8 @@ export interface TaskDiagnostics {
   resumeInstructions?: string;
   worktreePreserved: boolean;
   lastReviewVerdict?: CodexVerdict;
+  lastPreflightPassed?: boolean;
+  lastPreflightChecks?: string[];
   lastTestPassed?: boolean;
   humanVerificationChecklist?: string[];
   liveVerification?: LiveVerificationResult;
@@ -158,6 +160,14 @@ export interface ResumeTaskOptions {
 
 export type CodexVerdict = 'APPROVE' | 'CHANGES_REQUIRED' | 'NEEDS_USER_DECISION';
 
+export interface DeterministicPreflightEvidence {
+  pass: boolean;
+  checks: string[];
+  errors: string[];
+  testScriptPresent: boolean;
+  testPassed?: boolean;
+}
+
 export interface CodexReviewResult {
   verdict: CodexVerdict;
   summary: string;
@@ -166,6 +176,7 @@ export interface CodexReviewResult {
   humanVerificationChecklist: string[];
   parsedCleanly: boolean;
   rawOutput?: string;
+  preflight?: DeterministicPreflightEvidence;
 }
 
 export interface CodexReviewOptions {

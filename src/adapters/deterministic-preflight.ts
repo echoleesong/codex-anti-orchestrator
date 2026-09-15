@@ -1,15 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { CommandExecutor } from '../types.js';
+import type { CommandExecutor, DeterministicPreflightEvidence } from '../types.js';
 
 const PREFLIGHT_SCRIPTS = ['format:check', 'typecheck', 'lint', 'test', 'build'] as const;
 const MAX_ERROR_DETAIL = 2_000;
 
-export interface DeterministicPreflightResult {
-  pass: boolean;
-  checks: string[];
-  errors: string[];
-}
+export type DeterministicPreflightResult = DeterministicPreflightEvidence;
 
 function errorCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'code' in error
@@ -38,6 +34,8 @@ export async function runDeterministicPreflight(
 ): Promise<DeterministicPreflightResult> {
   const checks: string[] = [];
   const errors: string[] = [];
+  let testScriptPresent = false;
+  let testPassed: boolean | undefined;
 
   if (scope.baseSha && scope.headSha) {
     const diffScope = `${scope.baseSha}...${scope.headSha}`;
@@ -72,13 +70,13 @@ export async function runDeterministicPreflight(
     packageJson = { scripts: rawScripts as Record<string, unknown> | undefined };
   } catch (error) {
     if (errorCode(error) === 'ENOENT') {
-      return { pass: errors.length === 0, checks, errors };
+      return { pass: errors.length === 0, checks, errors, testScriptPresent, testPassed };
     }
     errors.push(
       `package.json preflight failed: ${error instanceof Error ? error.message : String(error)}`
     );
     checks.push('package.json parse/read: FAIL');
-    return { pass: false, checks, errors };
+    return { pass: false, checks, errors, testScriptPresent, testPassed };
   }
 
   const scripts = packageJson.scripts || {};
@@ -87,7 +85,12 @@ export async function runDeterministicPreflight(
 
     const command = `npm run ${scriptName}`;
     const result = await executor('npm', ['run', scriptName], { cwd: worktreePath });
-    if (result.exitCode === 0 && !result.error && !result.timedOut) {
+    const passed = result.exitCode === 0 && !result.error && !result.timedOut;
+    if (scriptName === 'test') {
+      testScriptPresent = true;
+      testPassed = passed;
+    }
+    if (passed) {
       checks.push(`${command}: PASS`);
     } else {
       checks.push(`${command}: FAIL`);
@@ -95,5 +98,5 @@ export async function runDeterministicPreflight(
     }
   }
 
-  return { pass: errors.length === 0, checks, errors };
+  return { pass: errors.length === 0, checks, errors, testScriptPresent, testPassed };
 }

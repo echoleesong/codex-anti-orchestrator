@@ -629,6 +629,8 @@ export class Orchestrator implements IOrchestrator {
             });
 
             task.diagnostics.lastReviewVerdict = reviewResult.verdict;
+            task.diagnostics.lastPreflightPassed = reviewResult.preflight?.pass;
+            task.diagnostics.lastPreflightChecks = reviewResult.preflight?.checks;
             task.diagnostics.humanVerificationChecklist = reviewResult.humanVerificationChecklist;
             task.metadata = {
               ...(task.metadata || {}),
@@ -651,11 +653,19 @@ export class Orchestrator implements IOrchestrator {
             await saveTaskState(this.stateDir, task);
 
             // 1. Run automated tests in worktree (mandatory local tests)
-            const testResult = await this.runWorktreeTests(
-              task.worktreePath,
-              executor,
-              loopOptions.testRunner
-            );
+            const reusablePreflightTest =
+              !loopOptions.testRunner &&
+              reviewResult.preflight?.testScriptPresent === true &&
+              typeof reviewResult.preflight.testPassed === 'boolean';
+            const testResult = reusablePreflightTest
+              ? {
+                  pass: reviewResult.preflight!.testPassed === true,
+                  errors:
+                    reviewResult.preflight!.testPassed === true
+                      ? undefined
+                      : reviewResult.preflight!.errors.join('\n'),
+                }
+              : await this.runWorktreeTests(task.worktreePath, executor, loopOptions.testRunner);
             const testPassed = testResult.pass;
             const testErrors = testResult.errors;
 

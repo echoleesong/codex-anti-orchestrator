@@ -312,16 +312,19 @@ function budgetFailureResult(error: unknown): CodexReviewResult {
   };
 }
 
-function preflightFailureResult(checks: string[], errors: string[]): CodexReviewResult {
+function preflightFailureResult(
+  preflight: Awaited<ReturnType<typeof runDeterministicPreflight>>
+): CodexReviewResult {
   return {
     verdict: 'CHANGES_REQUIRED',
     summary:
       'Deterministic preflight failed before Codex invocation. Fix these local gates before spending review quota.',
-    blockingIssues: errors,
+    blockingIssues: preflight.errors,
     warnings: [],
     humanVerificationChecklist: [],
     parsedCleanly: true,
-    rawOutput: checks.join('\n'),
+    rawOutput: preflight.checks.join('\n'),
+    preflight,
   };
 }
 
@@ -380,7 +383,7 @@ export class CodexAdapter {
       headSha: reviewIdentity.headSha,
     });
     if (!preflight.pass) {
-      return preflightFailureResult(preflight.checks, preflight.errors);
+      return preflightFailureResult(preflight);
     }
 
     try {
@@ -389,7 +392,7 @@ export class CodexAdapter {
         if (cached.verdict === 'APPROVE' && reviewIdentity.headSha) {
           this.lastApprovedHeadByTask.set(reviewIdentity.taskKey, reviewIdentity.headSha);
         }
-        return cached;
+        return { ...cached, preflight };
       }
 
       const reservation = await this.reviewBudgetStore.reserveCall(reviewIdentity);
@@ -402,6 +405,7 @@ export class CodexAdapter {
           humanVerificationChecklist: [],
           parsedCleanly: false,
           rawOutput: '',
+          preflight,
         };
       }
     } catch (error) {
@@ -465,6 +469,7 @@ export class CodexAdapter {
           humanVerificationChecklist: [],
           parsedCleanly: false,
           rawOutput: reviewOutput || execResult.stderr,
+          preflight,
         };
       }
 
@@ -478,6 +483,7 @@ export class CodexAdapter {
           humanVerificationChecklist: [],
           parsedCleanly: false,
           rawOutput: '',
+          preflight,
         };
       }
 
@@ -503,10 +509,11 @@ export class CodexAdapter {
             humanVerificationChecklist: result.humanVerificationChecklist,
             parsedCleanly: false,
             rawOutput: result.rawOutput,
+            preflight,
           };
         }
       }
-      return result;
+      return { ...result, preflight };
     } finally {
       await rm(outputDir, { recursive: true, force: true });
     }
