@@ -328,7 +328,7 @@ function preflightFailureResult(checks: string[], errors: string[]): CodexReview
 export class CodexAdapter {
   private executor: CommandExecutor;
   private reviewBudgetStore: CodexReviewBudgetStore;
-  private lastReviewedHeadByTask = new Map<string, string>();
+  private lastApprovedHeadByTask = new Map<string, string>();
 
   constructor(
     executor: CommandExecutor = defaultExecutor,
@@ -352,21 +352,21 @@ export class CodexAdapter {
       );
       reviewIdentity = initialIdentity;
 
-      const previousReviewedHead = this.lastReviewedHeadByTask.get(initialIdentity.taskKey);
+      const previousApprovedHead = this.lastApprovedHeadByTask.get(initialIdentity.taskKey);
       if (
-        previousReviewedHead &&
+        previousApprovedHead &&
         initialIdentity.headSha &&
-        previousReviewedHead !== initialIdentity.headSha
+        previousApprovedHead !== initialIdentity.headSha
       ) {
         const ancestorCheck = await executor(
           'git',
-          ['merge-base', '--is-ancestor', previousReviewedHead, initialIdentity.headSha],
+          ['merge-base', '--is-ancestor', previousApprovedHead, initialIdentity.headSha],
           { cwd: options.worktreePath }
         );
         if (ancestorCheck.exitCode === 0 && !ancestorCheck.error && !ancestorCheck.timedOut) {
           reviewIdentity = await this.reviewBudgetStore.identify(
             options.worktreePath,
-            previousReviewedHead,
+            previousApprovedHead,
             options.taskPrompt
           );
         }
@@ -386,8 +386,8 @@ export class CodexAdapter {
     try {
       const cached = await this.reviewBudgetStore.getCached(reviewIdentity);
       if (cached) {
-        if (reviewIdentity.headSha) {
-          this.lastReviewedHeadByTask.set(reviewIdentity.taskKey, reviewIdentity.headSha);
+        if (cached.verdict === 'APPROVE' && reviewIdentity.headSha) {
+          this.lastApprovedHeadByTask.set(reviewIdentity.taskKey, reviewIdentity.headSha);
         }
         return cached;
       }
@@ -491,8 +491,8 @@ export class CodexAdapter {
       if (result.parsedCleanly) {
         try {
           await this.reviewBudgetStore.store(reviewIdentity, result);
-          if (reviewIdentity.headSha) {
-            this.lastReviewedHeadByTask.set(reviewIdentity.taskKey, reviewIdentity.headSha);
+          if (result.verdict === 'APPROVE' && reviewIdentity.headSha) {
+            this.lastApprovedHeadByTask.set(reviewIdentity.taskKey, reviewIdentity.headSha);
           }
         } catch (error) {
           return {
