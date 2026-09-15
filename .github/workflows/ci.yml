@@ -6,19 +6,14 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: write
-
 jobs:
   validate:
     name: Format, Typecheck, Test & Build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out PR branch
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
 
       - name: Set up Node.js 24
         uses: actions/setup-node@v4
@@ -28,37 +23,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Apply fail-closed commit patch
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('src/orchestrator/orchestrator.ts')
-          text = path.read_text()
-          old = """    const commitRes = await executor('git', ['commit', '-m', commitMessage], {
-                cwd: worktreePath,
-              });
-              return commitRes.exitCode === 0;
-          """
-          new = """    const commitRes = await executor('git', ['commit', '-m', commitMessage], {
-                cwd: worktreePath,
-              });
-              if (commitRes.exitCode !== 0 || commitRes.error) {
-                throw new Error(
-                  `Failed to commit validated staged changes: ${
-                    commitRes.stderr.trim() || commitRes.error?.message || 'git commit failed'
-                  }`
-                );
-              }
-              return true;
-          """
-          if old in text:
-              if text.count(old) != 1:
-                  raise SystemExit(f'Expected one old commit block, found {text.count(old)}')
-              path.write_text(text.replace(old, new))
-          elif new not in text:
-              raise SystemExit('Neither the old nor fail-closed commit block was found')
-          PY
 
       - name: Check code formatting
         run: npm run format:check
@@ -71,16 +35,3 @@ jobs:
 
       - name: Build project
         run: npm run build
-
-      - name: Persist validated orchestrator patch
-        if: ${{ success() }}
-        run: |
-          if git diff --quiet -- src/orchestrator/orchestrator.ts; then
-            echo 'Validated patch is already committed.'
-            exit 0
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/orchestrator/orchestrator.ts
-          git commit -m 'fix: fail closed on git commit errors'
-          git push origin HEAD:${{ github.head_ref }}
