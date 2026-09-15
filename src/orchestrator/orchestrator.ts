@@ -619,7 +619,7 @@ export class Orchestrator implements IOrchestrator {
           }
 
           case 'CODEX_REVIEWING': {
-            // Invoke Codex review in read-only sandbox mode, explicitly checking diff against baseBranch
+            // CodexAdapter runs deterministic preflight first, then a quota-bounded native read-only review.
             const reviewResult = await codex.review({
               worktreePath: task.worktreePath,
               baseBranch: task.baseBranch,

@@ -26,8 +26,9 @@ flowchart TD
 
     subgraph PR & Code Review
         C -->|5. Commit & push branch| E[GitHub PR]
-        E -->|6. Trigger read-only review| F[Codex CLI]
-        F -->|7. Post review findings| B
+        E -->|6. Run deterministic preflight| Q[Local Gates: diff / format / typecheck / lint / test / build]
+        Q -->|7. Gates green; reserve review budget| F[Codex CLI]
+        F -->|8. Post review findings| B
     end
 
     subgraph Decision & Handoff
@@ -52,7 +53,7 @@ flowchart TD
 | **Local Daemon**            | Manages the state machine, enforces security boundaries, allocates isolated external worktrees, and controls iteration counts. | Strictly local process; does not install root/launchd services without explicit user intervention.                             |
 | **Antigravity CLI (`agy`)** | Executes coding tasks, test generation, and fixes inside the assigned external worktree.                                       | Restricted to the isolated worktree directory; forbidden from using dangerous bypass flags (`--dangerously-skip-permissions`). |
 | **GitHub PR**               | Central collaboration artifact, audit trail, and security boundary for changes.                                                | Minimal token scopes (`repo`, `workflow`); no automatic merge.                                                                 |
-| **Codex CLI (`codex`)**     | Performs automated, read-only static and semantic code reviews on generated diffs.                                             | Strictly read-only; cannot modify source files, push commits, or merge PRs.                                                    |
+| **Codex CLI (`codex`)**     | Performs quota-bounded, read-only semantic reviews only after deterministic local gates pass.                                  | Native `codex exec review`; isolated user config, hard per-task model-call budget, persistent SHA cache, no source mutation.   |
 
 ---
 
@@ -134,6 +135,8 @@ npx tsx src/cli.ts monitor --port 4390
 The monitor refreshes task state every three seconds and displays task progress, state transitions, PR links, local-test and review status, bounded CI polling observations, Codex's human-verification checklist, Anti's localhost verification evidence, and a redacted agent-event feed. It has no mutation, merge, or deployment controls and is reachable only at `http://127.0.0.1:<port>`.
 
 Development invocations also fail closed. If Antigravity exits successfully at a tool boundary without changing the isolated worktree, the orchestrator sends at most two stateless continuation prompts (three total invocations), retaining bounded prior output in the task event feed. A command error still stops immediately, and exhausting the bounded attempts creates no commit or PR. Guidance supplied when resuming a failed task is appended to the persisted task prompt before the retry.
+
+Before Codex can spend model quota, the adapter runs deterministic gates for `git diff --check` plus the available allowlisted package scripts (`format:check`, `typecheck`, `lint`, `test`, `build`). A failing local gate returns directly to Anti without reserving a Codex call. Real Codex invocations are durably capped at three per task worktree, parsed clean results are cached by immutable review identity, and an unchanged HEAD is never reviewed twice. A later incremental review is allowed only when the previous Codex-reviewed HEAD was `APPROVE` and is an ancestor of the new HEAD; fixes for a `CHANGES_REQUIRED` review are fully re-reviewed so an untouched old blocker cannot disappear. Passing preflight test evidence is reused by the state machine instead of immediately running the same default test suite a second time; custom test runners and projects without a standard `test` script keep their existing fallback behavior.
 
 Before a real Antigravity invocation, the orchestrator creates or refreshes a deterministic project entry under `~/.gemini/config/projects/` and launches `agy` with that explicit project. Its grants are scoped to the isolated task worktree: file reads and writes plus a small set of inspection, build, and test commands. Push, merge, deployment, elevated, network-transfer, destructive Git, and unsandboxed commands remain denied. Existing global Antigravity permissions are not expanded.
 
@@ -224,15 +227,18 @@ The MCP server exposes strictly the following seven authorized orchestration too
    - Supports only validated explicit `--model` identifiers and bounded `--print-timeout` durations (prohibiting arbitrary flags).
    - Fully stateless per invocation (no false promise of internal daemon resume).
 3. **OpenAI Codex CLI (`codex`) Adapter**:
-   - Operates in strictly read-only sandbox mode (`codex exec --sandbox read-only`).
-   - Validates structured verdicts: `APPROVE`, `CHANGES_REQUIRED`, `NEEDS_USER_DECISION`.
-   - Fail-safe fallback: malformed, unparseable, or absent output automatically defaults to `NEEDS_USER_DECISION`.
+   - Runs deterministic local preflight before any model-call budget is reserved; failed local gates return to Anti without spending Codex quota.
+   - Uses native `codex exec review --base <immutable-base>` with user config ignored, an ephemeral session, and unrelated plugins/apps/memory/browser/computer/image/hooks disabled.
+   - Durably caps real Codex calls at three per task worktree, caches clean parsed results by immutable review identity, and fails closed if budget/cache state is unsafe.
+   - Uses safe incremental review only from a previously `APPROVE` HEAD that is an ancestor of the new HEAD; otherwise it performs a full review.
+   - Validates structured verdicts: `APPROVE`, `CHANGES_REQUIRED`, `NEEDS_USER_DECISION`; malformed, unparseable, or absent output defaults to `NEEDS_USER_DECISION`.
 4. **GitHub PR Adapter (`gh`)**:
    - Manages PR metadata only (`create`, `view`, `update`, `checks`).
    - Hard block on auto-merge (`gh pr merge`), workflow dispatch, release creation, and deployments.
    - Strictly blocks direct pushes to `main` and protected branches; enforces `anti/*` task branches.
 5. **Controlled State Loop**:
-   - Enforces legal state machine transitions and bounded iteration cycles (`MAX_REVIEW_CYCLES = 3`).
+   - Enforces legal state machine transitions and bounded review/fix cycles (`MAX_REVIEW_CYCLES = 3`) independently from the hard Codex model-call budget.
+   - Persists deterministic preflight evidence in diagnostics and reuses a proven passing default `test` gate instead of running it twice back-to-back.
    - `AWAITING_HUMAN_APPROVAL` is strictly guarded: requires automated tests green, GitHub CI passing, Codex review `APPROVE` with a human verification checklist, and a structured Anti localhost live-verification report.
    - Preserves diagnostics and isolated worktrees on decision, override, or failure.
 6. **Bounded CI Waiting and Local Observability**:
