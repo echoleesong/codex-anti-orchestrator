@@ -13,6 +13,7 @@ import {
   type CodexReviewBudgetStoreOptions,
   type ReviewIdentity,
 } from './codex-review-budget.js';
+import { runDeterministicPreflight } from './deterministic-preflight.js';
 
 const VALID_VERDICTS: readonly CodexVerdict[] = [
   'APPROVE',
@@ -311,9 +312,23 @@ function budgetFailureResult(error: unknown): CodexReviewResult {
   };
 }
 
+function preflightFailureResult(checks: string[], errors: string[]): CodexReviewResult {
+  return {
+    verdict: 'CHANGES_REQUIRED',
+    summary:
+      'Deterministic preflight failed before Codex invocation. Fix these local gates before spending review quota.',
+    blockingIssues: errors,
+    warnings: [],
+    humanVerificationChecklist: [],
+    parsedCleanly: true,
+    rawOutput: checks.join('\n'),
+  };
+}
+
 export class CodexAdapter {
   private executor: CommandExecutor;
   private reviewBudgetStore: CodexReviewBudgetStore;
+  private lastReviewedHeadByTask = new Map<string, string>();
 
   constructor(
     executor: CommandExecutor = defaultExecutor,
@@ -330,14 +345,52 @@ export class CodexAdapter {
 
     let reviewIdentity: ReviewIdentity;
     try {
-      reviewIdentity = await this.reviewBudgetStore.identify(
+      const initialIdentity = await this.reviewBudgetStore.identify(
         options.worktreePath,
         baseBranch,
         options.taskPrompt
       );
+      reviewIdentity = initialIdentity;
 
+      const previousReviewedHead = this.lastReviewedHeadByTask.get(initialIdentity.taskKey);
+      if (
+        previousReviewedHead &&
+        initialIdentity.headSha &&
+        previousReviewedHead !== initialIdentity.headSha
+      ) {
+        const ancestorCheck = await executor(
+          'git',
+          ['merge-base', '--is-ancestor', previousReviewedHead, initialIdentity.headSha],
+          { cwd: options.worktreePath }
+        );
+        if (ancestorCheck.exitCode === 0 && !ancestorCheck.error && !ancestorCheck.timedOut) {
+          reviewIdentity = await this.reviewBudgetStore.identify(
+            options.worktreePath,
+            previousReviewedHead,
+            options.taskPrompt
+          );
+        }
+      }
+    } catch (error) {
+      return budgetFailureResult(error);
+    }
+
+    const preflight = await runDeterministicPreflight(options.worktreePath, executor, {
+      baseSha: reviewIdentity.baseSha,
+      headSha: reviewIdentity.headSha,
+    });
+    if (!preflight.pass) {
+      return preflightFailureResult(preflight.checks, preflight.errors);
+    }
+
+    try {
       const cached = await this.reviewBudgetStore.getCached(reviewIdentity);
-      if (cached) return cached;
+      if (cached) {
+        if (reviewIdentity.headSha) {
+          this.lastReviewedHeadByTask.set(reviewIdentity.taskKey, reviewIdentity.headSha);
+        }
+        return cached;
+      }
 
       const reservation = await this.reviewBudgetStore.reserveCall(reviewIdentity);
       if (!reservation.allowed) {
@@ -438,6 +491,9 @@ export class CodexAdapter {
       if (result.parsedCleanly) {
         try {
           await this.reviewBudgetStore.store(reviewIdentity, result);
+          if (reviewIdentity.headSha) {
+            this.lastReviewedHeadByTask.set(reviewIdentity.taskKey, reviewIdentity.headSha);
+          }
         } catch (error) {
           return {
             verdict: 'NEEDS_USER_DECISION',
