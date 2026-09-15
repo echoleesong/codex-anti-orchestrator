@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   buildCodexReviewPrompt,
   CodexAdapter,
@@ -205,6 +208,18 @@ Thanks!
   });
 
   describe('CodexAdapter execution', () => {
+    let tempDir: string;
+    let cacheFile: string;
+
+    beforeEach(async () => {
+      tempDir = await mkdtemp(path.join(tmpdir(), 'codex-adapter-test-'));
+      cacheFile = path.join(tempDir, 'review-cache.json');
+    });
+
+    afterEach(async () => {
+      await rm(tempDir, { recursive: true, force: true });
+    });
+
     it('should construct an isolated ephemeral codex review with structured file output', async () => {
       const executedFiles: string[] = [];
       const executedArgs: string[][] = [];
@@ -227,7 +242,7 @@ Thanks!
         };
       };
 
-      const adapter = new CodexAdapter(mockExecutor);
+      const adapter = new CodexAdapter(mockExecutor, { cacheFile });
       const res = await adapter.review({
         worktreePath: '/fake/worktree',
         prNumberOrBranch: 'anti/task-123',
@@ -259,7 +274,7 @@ Thanks!
         stderr: 'fatal: connection to review daemon lost',
       });
 
-      const adapter = new CodexAdapter(mockExecutor);
+      const adapter = new CodexAdapter(mockExecutor, { cacheFile });
       const res = await adapter.review({
         worktreePath: '/fake/worktree',
       });
@@ -277,7 +292,7 @@ Thanks!
         timedOut: true,
       });
 
-      const adapter = new CodexAdapter(mockExecutor);
+      const adapter = new CodexAdapter(mockExecutor, { cacheFile });
       const res = await adapter.review({
         worktreePath: '/fake/worktree',
         timeoutMs: 1234,
@@ -287,6 +302,38 @@ Thanks!
       expect(res.parsedCleanly).toBe(false);
       expect(res.summary).toContain('timed out after 1234ms');
       expect(res.summary).not.toContain('output was empty');
+    });
+
+    it('should maintain repeatability across multiple isolated adapter executions without exhausting real budget state', async () => {
+      for (let i = 0; i < 5; i++) {
+        const testDir = await mkdtemp(path.join(tmpdir(), 'codex-adapter-repeat-'));
+        try {
+          const testCacheFile = path.join(testDir, 'review-cache.json');
+          const mockExecutor: CommandExecutor = async () => ({
+            exitCode: 0,
+            stdout: JSON.stringify({
+              verdict: 'APPROVE',
+              summary: `Approved run ${i}`,
+              blockingIssues: [],
+              warnings: [],
+              humanVerificationChecklist: ['Verify locally.'],
+            }),
+            stderr: '',
+          });
+
+          const adapter = new CodexAdapter(mockExecutor, { cacheFile: testCacheFile });
+          const res = await adapter.review({
+            worktreePath: '/fake/worktree',
+            prNumberOrBranch: 'anti/repeat-test',
+          });
+
+          expect(res.verdict).toBe('APPROVE');
+          expect(res.parsedCleanly).toBe(true);
+          expect(res.summary).toBe(`Approved run ${i}`);
+        } finally {
+          await rm(testDir, { recursive: true, force: true });
+        }
+      }
     });
   });
 
