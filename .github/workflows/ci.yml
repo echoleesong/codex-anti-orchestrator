@@ -24,6 +24,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Require clean npm audit
+        run: npm audit --audit-level=moderate
+
       - name: Check code formatting
         run: npm run format:check
 

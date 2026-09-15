@@ -71,8 +71,11 @@ This document defines the security boundaries, operational constraints, and safe
 
 ### 2.8 Codex CLI Read-Only Review & Fail-Safe Parsing
 
-- **Review-Only Mode**: During the review phase, OpenAI Codex CLI (`codex`) is invoked strictly with read-only flags (`codex exec --sandbox read-only`).
-- **No Code Mutation**: Codex must inspect git diffs, ASTs, and PR metadata to produce structured comments and suggestions, but is strictly disallowed from writing files or making commits directly.
+- **Deterministic Gate Before Model Spend**: Before reserving review budget, the adapter runs `git diff --check` and any available allowlisted package scripts (`format:check`, `typecheck`, `lint`, `test`, `build`). A failure returns to Anti without invoking Codex.
+- **Review-Only Mode**: OpenAI Codex CLI is invoked with native `codex exec review --base <immutable-base>`, while user config is ignored, the session is ephemeral, and unrelated capabilities (plugins, apps, memories, multi-agent, browser/computer use, image generation, hooks) are disabled.
+- **Bounded & Cached Review**: Real Codex invocations are durably limited to three per task worktree. Clean parsed results are cached by immutable base/head/task identity, duplicate HEAD reviews are prevented, and unsafe/corrupt budget state fails closed.
+- **Safe Incremental Scope**: A later review may use the previous reviewed HEAD as its base only when that HEAD was `APPROVE` and remains an ancestor of the current HEAD. A `CHANGES_REQUIRED` result never becomes an incremental base, preventing untouched blockers from disappearing from review scope.
+- **No Code Mutation**: Codex inspects repository changes and produces structured findings but never writes source files, commits, pushes, or merges.
 - **Fail-Safe Verdict Parsing**:
   - Valid verdicts: `APPROVE`, `CHANGES_REQUIRED`, `NEEDS_USER_DECISION`.
   - An `APPROVE` verdict with residual blocking issues is automatically downgraded to `CHANGES_REQUIRED`.

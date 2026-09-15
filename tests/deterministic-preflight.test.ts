@@ -49,6 +49,8 @@ describe('deterministic Codex preflight', () => {
 
     expect(result.pass).toBe(false);
     expect(result.errors).toHaveLength(1);
+    expect(result.testScriptPresent).toBe(true);
+    expect(result.testPassed).toBe(true);
     expect(result.errors[0]).toContain('npm run typecheck failed');
     expect(calls).toEqual([
       `git diff --check ${'a'.repeat(40)}...${'b'.repeat(40)}`,
@@ -72,6 +74,8 @@ describe('deterministic Codex preflight', () => {
     });
 
     expect(result.pass).toBe(true);
+    expect(result.testScriptPresent).toBe(false);
+    expect(result.testPassed).toBeUndefined();
     expect(calls).toEqual([`git diff --check ${'c'.repeat(40)}...${'d'.repeat(40)}`]);
   });
 

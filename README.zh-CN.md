@@ -15,7 +15,8 @@ flowchart LR
     O --> W[仓库外隔离 Worktree]
     W --> A[Antigravity / agy 开发]
     A --> P[GitHub PR]
-    P --> R[Codex CLI 只读审查]
+    P --> Q[确定性预检：diff / format / typecheck / lint / test / build]
+    Q --> R[Codex CLI 配额受控只读审查]
     R -->|需修复| A
     R -->|审查通过| V[Anti 本地运行验证]
     V --> H[等待人工核验与合并]
@@ -35,7 +36,7 @@ flowchart LR
 
 - Anti 只在目标仓库外的隔离 Git worktree 中工作，不直接修改你的主工作区。
 - 每次真实调用前，协调器会创建或刷新一个确定性的 Agy 项目配置，并通过 `--project` 显式选中。权限仅覆盖当前任务 worktree 的文件读写及少量检查、构建、测试命令；不会扩大 Agy 全局权限。
-- Codex CLI 以只读沙箱审查差异，不提交代码、不推送、更不会合并 PR。
+- Codex CLI 只在确定性预检全绿后进入模型审查；真实 Codex 调用有持久化硬上限和 SHA 缓存，不提交代码、不推送、更不会合并 PR。
 - 自动化流程可以创建、更新 PR 并迭代修复；**不会自动合并、部署、发布或绕过分支保护**。
 - 监控页仅监听 `127.0.0.1`，只读展示任务、审查、CI 和本地验证状态。
 
@@ -134,6 +135,8 @@ npx tsx src/cli.ts monitor --port 4390
 
 开发调用同样采用 Fail-Closed 策略。如果 Antigravity 在工具边界成功退出、但隔离 worktree 尚无变更，编排器最多发送两次无状态续跑提示（合计三次调用），并把上一轮的有界输出保留在任务事件流中。任一命令报错仍会立即停止；耗尽次数后不会提交或创建 PR。从失败状态恢复时提供的 guidance 会先追加到持久化任务提示词，再进入重试。
 
+每次 Codex 真正调用模型前，适配器都会先执行 `git diff --check`，以及项目实际存在的 `format:check`、`typecheck`、`lint`、`test`、`build` 等白名单脚本。任何确定性检查失败都会直接交回 Anti 修复，不占用 Codex 调用额度。每个任务 worktree 的真实 Codex 调用持久化硬上限为 3 次；同一不可变审查身份会命中缓存，同一个 HEAD 不会重复审查。只有“上一轮 Codex 已 `APPROVE` 且该 HEAD 仍是新 HEAD 祖先”时，后续才允许只审修复增量；若上一轮是 `CHANGES_REQUIRED`，下一轮仍做全量复审，避免旧 blocker 因文件未再次修改而消失。预检已经通过的默认 `test` 结果会被状态机复用，避免紧接着重复跑同一套测试；自定义 test runner 和没有标准 `test` script 的项目仍保持原有回退行为。
+
 任意 MCP 工具首次被调用时，也会自动启动同一只读监控页并在本机浏览器打开。默认优先使用 `http://127.0.0.1:4390`；端口被占用时会安全地选择下一个可用本机端口。
 
 ## 配置 Codex Desktop MCP
@@ -171,9 +174,9 @@ MCP 不提供风险放行、任意命令执行、合并、自动合并、部署�
 
 1. **安全的子进程调用**：所有 `git`、`gh`、`agy` 与 `codex` 命令均使用参数数组调用，不拼接 shell 命令；执行有超时和输出大小限制，日志会脱敏 GitHub Token、OpenAI/Anthropic Key、Bearer Token 和 URL 密码。
 2. **Anti 开发适配器**：只接受已校验的模型和超时参数，在外部 worktree 中以 `--sandbox`、`--mode accept-edits`、`--print` 运行；每一轮调用都是带完整上下文的无状态执行。
-3. **Codex 审查适配器**：使用 `codex exec --sandbox read-only`。审查结论只能是 `APPROVE`、`CHANGES_REQUIRED` 或 `NEEDS_USER_DECISION`；缺失、空白或无法解析的输出会安全地降级为需要人工决策。
+3. **Codex 审查适配器**：先执行不消耗模型额度的确定性预检，再使用原生 `codex exec review --base <不可变基线>`；忽略用户配置、使用临时会话，并关闭与代码审查无关的插件、应用、记忆、浏览器、电脑操作、图片生成和 hooks。真实模型调用每任务最多 3 次，干净解析结果按不可变审查身份持久化缓存；预算或缓存状态异常会 Fail-Closed。审查结论只能是 `APPROVE`、`CHANGES_REQUIRED` 或 `NEEDS_USER_DECISION`。
 4. **GitHub PR 适配器**：仅允许创建、查看、更新 PR 和查询检查状态；禁止 merge、workflow dispatch、release、deploy、publish 等操作，也禁止直接推送到受保护分支。
-5. **受控状态循环**：修复轮数默认最多 3 轮。每次状态流转、审查摘要和错误诊断都会保留；失败、人工决策和人工核验阶段的 worktree 会保留以供检查。
+5. **受控状态循环**：修复轮数默认最多 3 轮，并与“每任务最多 3 次真实 Codex 模型调用”的硬预算独立计数。确定性预检结果会进入 diagnostics；已经通过的默认测试证据可直接复用，避免同一 HEAD 紧接着重复测试。每次状态流转、审查摘要和错误诊断都会保留；失败、人工决策和人工核验阶段的 worktree 会保留以供检查。
 6. **有界 CI 等待与本机可观测性**：CI pending 会在有限次数内轮询，不会无限等待。监控页只读、仅 localhost 访问，事件内容经过长度限制和凭据脱敏。
 
 ## 安全与人工验收

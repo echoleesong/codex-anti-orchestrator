@@ -44,6 +44,8 @@ describe('Controlled State-Loop Execution & Transitions', () => {
       worktreeChanges?: boolean;
       worktreeChangesAfterAgyCalls?: number;
       agyCallCountRef?: { value: number };
+      packageTestScript?: boolean;
+      testCallCountRef?: { value: number };
     } = {}
   ): CommandExecutor => {
     let codexCallCount = 0;
@@ -90,6 +92,12 @@ describe('Controlled State-Loop Execution & Transitions', () => {
         const wtPath = args[args.indexOf('-b') + 2];
         if (wtPath) {
           fs.mkdirSync(wtPath, { recursive: true });
+          if (options.packageTestScript) {
+            fs.writeFileSync(
+              path.join(wtPath, 'package.json'),
+              JSON.stringify({ scripts: { test: 'vitest run' } })
+            );
+          }
         }
         return { exitCode: 0, stdout: 'Preparing worktree\n', stderr: '' };
       }
@@ -281,6 +289,7 @@ describe('Controlled State-Loop Execution & Transitions', () => {
         const passResults = options.testsPass ?? [true];
         const passed = passResults[Math.min(testCallCount, passResults.length - 1)];
         testCallCount++;
+        if (options.testCallCountRef) options.testCallCountRef.value = testCallCount;
 
         return {
           exitCode: passed ? 0 : 1,
@@ -330,6 +339,34 @@ describe('Controlled State-Loop Execution & Transitions', () => {
     expect(states).toContain('REVIEW_EVALUATING');
     expect(states).toContain('AGY_VALIDATING');
     expect(states[states.length - 1]).toBe('AWAITING_HUMAN_APPROVAL');
+  });
+
+  it('reuses the passing Codex preflight test gate instead of running the same default test twice', async () => {
+    const testCallCountRef = { value: 0 };
+    const mock = createMockExecutor({
+      codexVerdicts: ['APPROVE'],
+      testsPass: [true],
+      packageTestScript: true,
+      testCallCountRef,
+    });
+    const orchestrator = new Orchestrator({ stateDir, allowedBaseDir: tempDir, executor: mock });
+    const task = await orchestrator.createTask({
+      repoPath,
+      prompt: 'Reuse deterministic test gate',
+    });
+
+    const finishedTask = await orchestrator.runTaskLoop(task.id, {
+      executor: mock,
+      ciWait: { maxAttempts: 2, pollIntervalMs: 0 },
+    });
+
+    expect(finishedTask.state).toBe('AWAITING_HUMAN_APPROVAL');
+    expect(testCallCountRef.value).toBe(1);
+    expect(finishedTask.diagnostics.lastPreflightPassed).toBe(true);
+    expect(finishedTask.diagnostics.lastPreflightChecks).toEqual(
+      expect.arrayContaining(['npm run test: PASS'])
+    );
+    expect(finishedTask.diagnostics.lastTestPassed).toBe(true);
   });
 
   it('should run fix cycle when CHANGES_REQUIRED is returned and reach AWAITING_HUMAN_APPROVAL on subsequent pass', async () => {
