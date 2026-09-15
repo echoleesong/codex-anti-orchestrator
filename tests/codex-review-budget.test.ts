@@ -61,14 +61,22 @@ describe('Codex review budget and cache', () => {
     expect(await store.getCached(identity)).toEqual(result);
   });
 
-  it('reuses the same review identity and invalidates cache when base or HEAD changes', async () => {
+  it('reuses the same review identity and switches later HEADs to incremental Codex review', async () => {
+    const originalHeadSha = '2'.repeat(40);
     const baseSha = 'a'.repeat(40);
-    const worktree = await createFakeWorktree('2'.repeat(40), baseSha);
+    const worktree = await createFakeWorktree(originalHeadSha, baseSha);
     const cacheFile = path.join(worktree, 'state', 'review-cache.json');
     let modelCalls = 0;
     const observedBases: string[] = [];
 
-    const executor: CommandExecutor = async (_file, args) => {
+    const executor: CommandExecutor = async (file, args) => {
+      if (file === 'git') {
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (file !== 'codex') {
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+
       modelCalls += 1;
       observedBases.push(args[args.indexOf('--base') + 1] || '');
       return {
@@ -103,6 +111,59 @@ describe('Codex review budget and cache', () => {
     await writeFile(path.join(worktree, '.git', 'HEAD'), `${'3'.repeat(40)}\n`);
     expect((await adapter.review(options)).verdict).toBe('APPROVE');
     expect(modelCalls).toBe(3);
+    expect(observedBases.at(-1)).toBe(originalHeadSha);
+  });
+
+  it('does not spend Codex budget when deterministic preflight fails', async () => {
+    const worktree = await createFakeWorktree('8'.repeat(40));
+    const cacheFile = path.join(worktree, 'state', 'review-cache.json');
+    await writeFile(
+      path.join(worktree, 'package.json'),
+      JSON.stringify({ scripts: { typecheck: 'tsc --noEmit' } })
+    );
+
+    let typecheckFails = true;
+    let modelCalls = 0;
+    const executor: CommandExecutor = async (file, args) => {
+      if (file === 'git') {
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (file === 'npm') {
+        return typecheckFails
+          ? { exitCode: 1, stdout: '', stderr: 'Type error' }
+          : { exitCode: 0, stdout: 'ok', stderr: '' };
+      }
+      if (file === 'codex') {
+        modelCalls += 1;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            verdict: 'APPROVE',
+            summary: 'reviewed',
+            blockingIssues: [],
+            warnings: [],
+            humanVerificationChecklist: ['Verify the task locally.'],
+          }),
+          stderr: '',
+        };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+
+    const adapter = new CodexAdapter(executor, { cacheFile, maxCallsPerTask: 1 });
+    const options = { worktreePath: worktree, baseBranch: 'main', taskPrompt: 'Task' };
+
+    const failedPreflight = await adapter.review(options);
+    expect(failedPreflight.verdict).toBe('CHANGES_REQUIRED');
+    expect(failedPreflight.summary).toContain('Deterministic preflight failed');
+    expect(modelCalls).toBe(0);
+
+    typecheckFails = false;
+    expect((await adapter.review(options)).verdict).toBe('APPROVE');
+    expect(modelCalls).toBe(1);
+
+    expect((await adapter.review(options)).verdict).toBe('APPROVE');
+    expect(modelCalls).toBe(1);
   });
 
   it('still enforces the hard call budget when Git identity cannot be resolved', async () => {
