@@ -336,7 +336,9 @@ export class CodexReviewBudgetStore {
     try {
       return validateBudgetState(parsed);
     } catch (error) {
-      throw new Error(`Codex review budget state is invalid; refusing to reset quota: ${String(error)}`);
+      throw new Error(
+        `Codex review budget state is invalid; refusing to reset quota: ${String(error)}`
+      );
     }
   }
 
