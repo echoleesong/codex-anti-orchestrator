@@ -426,7 +426,14 @@ export class Orchestrator implements IOrchestrator {
     const commitRes = await executor('git', ['commit', '-m', commitMessage], {
       cwd: worktreePath,
     });
-    return commitRes.exitCode === 0;
+    if (commitRes.exitCode !== 0 || commitRes.error) {
+      throw new Error(
+        `Failed to commit validated staged changes: ${
+          commitRes.stderr.trim() || commitRes.error?.message || 'git commit failed'
+        }`
+      );
+    }
+    return true;
   }
 
   /**
