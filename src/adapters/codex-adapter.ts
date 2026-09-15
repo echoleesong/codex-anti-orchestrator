@@ -8,6 +8,11 @@ import type {
   CommandExecutor,
 } from '../types.js';
 import { defaultExecutor } from '../utils/exec.js';
+import {
+  CodexReviewBudgetStore,
+  type CodexReviewBudgetStoreOptions,
+  type ReviewIdentity,
+} from './codex-review-budget.js';
 
 const VALID_VERDICTS: readonly CodexVerdict[] = [
   'APPROVE',
@@ -72,29 +77,26 @@ export function parseCodexReviewOutput(
 
   const trimmed = rawOutput.trim();
 
-  // Attempt to parse JSON directly or from markdown ```json ``` blocks
   let parsed: unknown = null;
 
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    // Try extracting JSON block
     const jsonMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
     if (jsonMatch && jsonMatch[1]) {
       try {
         parsed = JSON.parse(jsonMatch[1].trim());
       } catch {
-        // Fallback below
+        // Fallback below.
       }
     } else {
-      // Try searching for first { and last }
       const firstBrace = trimmed.indexOf('{');
       const lastBrace = trimmed.lastIndexOf('}');
       if (firstBrace !== -1 && lastBrace > firstBrace) {
         try {
           parsed = JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
         } catch {
-          // Fallback below
+          // Fallback below.
         }
       }
     }
@@ -145,15 +147,11 @@ export function parseCodexReviewOutput(
   }
 
   const obj = parsed as Record<string, unknown>;
-
-  // Extract and validate verdict
   let rawVerdict = typeof obj.verdict === 'string' ? obj.verdict.trim().toUpperCase() : '';
-  // Check for common alternative keys
   if (!rawVerdict && typeof obj.status === 'string') {
     rawVerdict = obj.status.trim().toUpperCase();
   }
 
-  // Normalize verdict
   let normalizedVerdict: CodexVerdict | undefined;
   if (rawVerdict === 'APPROVE' || rawVerdict === 'APPROVED') {
     normalizedVerdict = 'APPROVE';
@@ -172,7 +170,6 @@ export function parseCodexReviewOutput(
     normalizedVerdict = 'NEEDS_USER_DECISION';
   }
 
-  // If verdict is not recognized, fail safe to NEEDS_USER_DECISION
   if (!normalizedVerdict || !VALID_VERDICTS.includes(normalizedVerdict)) {
     return {
       verdict: 'NEEDS_USER_DECISION',
@@ -185,7 +182,6 @@ export function parseCodexReviewOutput(
     };
   }
 
-  // Invariant: For APPROVE, require an explicitly present blockingIssues array containing only strings and zero entries
   if (normalizedVerdict === 'APPROVE') {
     const hasValidBlockingIssues =
       'blockingIssues' in obj &&
@@ -221,7 +217,6 @@ export function parseCodexReviewOutput(
         .slice(0, 12)
     : [];
 
-  // A clean PR must include review-authored, concrete checks for the human handoff.
   if (normalizedVerdict === 'APPROVE' && humanVerificationChecklist.length === 0) {
     return {
       verdict: 'NEEDS_USER_DECISION',
@@ -235,13 +230,11 @@ export function parseCodexReviewOutput(
     };
   }
 
-  // Extract blocking issues
   const rawBlockers = obj.blockingIssues || obj.blocking_issues || obj.issues || obj.blockers || [];
   const blockingIssues: string[] = Array.isArray(rawBlockers)
     ? rawBlockers.map((b) => (typeof b === 'string' ? b : JSON.stringify(b))).filter(Boolean)
     : [];
 
-  // Extract warnings
   const rawWarnings = obj.warnings || obj.suggestions || [];
   const warnings: string[] = Array.isArray(rawWarnings)
     ? rawWarnings.map((w) => (typeof w === 'string' ? w : JSON.stringify(w))).filter(Boolean)
@@ -263,9 +256,6 @@ export function parseCodexReviewOutput(
   };
 }
 
-/**
- * Constructs the structured review prompt for Codex execution in read-only sandbox mode.
- */
 export function buildCodexReviewPrompt(
   options: {
     baseBranch?: string;
@@ -309,24 +299,63 @@ export function buildCodexReviewPrompt(
   return lines.join('\n');
 }
 
+function budgetFailureResult(error: unknown): CodexReviewResult {
+  return {
+    verdict: 'NEEDS_USER_DECISION',
+    summary: `Codex review budget state is unavailable or unsafe: ${error instanceof Error ? error.message : String(error)}. Failing closed without invoking Codex.`,
+    blockingIssues: [],
+    warnings: [],
+    humanVerificationChecklist: [],
+    parsedCleanly: false,
+    rawOutput: '',
+  };
+}
+
 export class CodexAdapter {
   private executor: CommandExecutor;
+  private reviewBudgetStore: CodexReviewBudgetStore;
 
-  constructor(executor: CommandExecutor = defaultExecutor) {
+  constructor(
+    executor: CommandExecutor = defaultExecutor,
+    budgetOptions: CodexReviewBudgetStoreOptions = {}
+  ) {
     this.executor = executor;
+    this.reviewBudgetStore = new CodexReviewBudgetStore(budgetOptions);
   }
 
-  /**
-   * Invokes Codex using 'codex exec --sandbox read-only' to perform a read-only code review.
-   * Enforces argument arrays, read-only sandbox permissions, and fail-closed parsing.
-   */
   async review(options: CodexReviewOptions): Promise<CodexReviewResult> {
     const executor = options.executor || this.executor;
-    // Repository-wide reviews routinely exceed two minutes. A short timeout can
-    // make Codex handle SIGTERM and exit 0 before emitting its final response,
-    // which is otherwise indistinguishable from a successful empty review.
     const timeoutMs = options.timeoutMs ?? 600000;
+    const baseBranch = options.baseBranch || 'main';
 
+    let reviewIdentity: ReviewIdentity;
+    try {
+      reviewIdentity = await this.reviewBudgetStore.identify(
+        options.worktreePath,
+        baseBranch,
+        options.taskPrompt
+      );
+
+      const cached = await this.reviewBudgetStore.getCached(reviewIdentity);
+      if (cached) return cached;
+
+      const reservation = await this.reviewBudgetStore.reserveCall(reviewIdentity);
+      if (!reservation.allowed) {
+        return {
+          verdict: 'NEEDS_USER_DECISION',
+          summary: `Codex review budget exhausted for this task worktree (${reservation.calls}/${reservation.maxCalls} model calls). Failing closed instead of automatically spending additional Codex quota.`,
+          blockingIssues: [],
+          warnings: [],
+          humanVerificationChecklist: [],
+          parsedCleanly: false,
+          rawOutput: '',
+        };
+      }
+    } catch (error) {
+      return budgetFailureResult(error);
+    }
+
+    const reviewBase = reviewIdentity.baseSha || baseBranch;
     const outputDir = await mkdtemp(path.join(tmpdir(), 'codex-anti-review-'));
     const schemaPath = path.join(outputDir, 'schema.json');
     const lastMessagePath = path.join(outputDir, 'last-message.json');
@@ -334,15 +363,11 @@ export class CodexAdapter {
     try {
       await writeFile(schemaPath, JSON.stringify(CODEX_REVIEW_OUTPUT_SCHEMA), { mode: 0o600 });
 
-      // The dedicated review subcommand computes the branch diff itself and is
-      // read-only. Keep it isolated from unrelated user plugins and tools, and
-      // persist the final message because stdout is not a stable API across
-      // Codex CLI versions or graceful timeout handling.
       const args = [
         'exec',
         'review',
         '--base',
-        options.baseBranch || 'main',
+        reviewBase,
         '--ignore-user-config',
         '--ephemeral',
         '--disable',
@@ -409,7 +434,23 @@ export class CodexAdapter {
             `In the running local application, verify this reviewed requirement is satisfied without runtime or console errors: ${taskRequirement.slice(0, 600)}`,
           ]
         : [];
-      return parseCodexReviewOutput(reviewOutput, nativeApprovalChecklist);
+      const result = parseCodexReviewOutput(reviewOutput, nativeApprovalChecklist);
+      if (result.parsedCleanly) {
+        try {
+          await this.reviewBudgetStore.store(reviewIdentity, result);
+        } catch (error) {
+          return {
+            verdict: 'NEEDS_USER_DECISION',
+            summary: `Codex review completed but its durable review cache could not be updated safely: ${error instanceof Error ? error.message : String(error)}. Failing closed instead of allowing an automatic re-review.`,
+            blockingIssues: result.blockingIssues,
+            warnings: result.warnings,
+            humanVerificationChecklist: result.humanVerificationChecklist,
+            parsedCleanly: false,
+            rawOutput: result.rawOutput,
+          };
+        }
+      }
+      return result;
     } finally {
       await rm(outputDir, { recursive: true, force: true });
     }
