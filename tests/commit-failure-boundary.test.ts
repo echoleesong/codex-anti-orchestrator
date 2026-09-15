@@ -24,7 +24,13 @@ describe('git commit failure boundary', () => {
     const orchestrator = new Orchestrator({ executor });
 
     await expect(
-      orchestrator.commitWorktreeChanges('/isolated/worktree', 'fix: preserve commit failures', executor)
-    ).rejects.toThrow(/Failed to commit validated staged changes.*pre-commit hook rejected the commit/);
+      orchestrator.commitWorktreeChanges(
+        '/isolated/worktree',
+        'fix: preserve commit failures',
+        executor
+      )
+    ).rejects.toThrow(
+      /Failed to commit validated staged changes.*pre-commit hook rejected the commit/
+    );
   });
 });
