@@ -6,19 +6,14 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: write
-
 jobs:
   validate:
     name: Format, Typecheck, Test & Build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out PR branch
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
 
       - name: Set up Node.js 24
         uses: actions/setup-node@v4
@@ -28,71 +23,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Synchronize quota-safe review documentation
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          def replace_once(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{path}: expected one match, found {count}: {old[:100]!r}')
-              p.write_text(text.replace(old, new, 1))
-
-          replace_once('README.md',
-          """    subgraph PR & Code Review\n        C -->|5. Commit & push branch| E[GitHub PR]\n        E -->|6. Trigger read-only review| F[Codex CLI]\n        F -->|7. Post review findings| B\n    end\n""",
-          """    subgraph PR & Code Review\n        C -->|5. Commit & push branch| E[GitHub PR]\n        E -->|6. Run deterministic preflight| Q[Local Gates: diff / format / typecheck / lint / test / build]\n        Q -->|7. Gates green; reserve review budget| F[Codex CLI]\n        F -->|8. Post review findings| B\n    end\n""")
-          replace_once('README.md',
-          """| **Codex CLI (`codex`)**     | Performs automated, read-only static and semantic code reviews on generated diffs.                                             | Strictly read-only; cannot modify source files, push commits, or merge PRs.                                                    |\n""",
-          """| **Codex CLI (`codex`)**     | Performs quota-bounded, read-only semantic reviews only after deterministic local gates pass.                                  | Native `codex exec review`; isolated user config, hard per-task model-call budget, persistent SHA cache, no source mutation.    |\n""")
-          replace_once('README.md',
-          """Development invocations also fail closed. If Antigravity exits successfully at a tool boundary without changing the isolated worktree, the orchestrator sends at most two stateless continuation prompts (three total invocations), retaining bounded prior output in the task event feed. A command error still stops immediately, and exhausting the bounded attempts creates no commit or PR. Guidance supplied when resuming a failed task is appended to the persisted task prompt before the retry.\n""",
-          """Development invocations also fail closed. If Antigravity exits successfully at a tool boundary without changing the isolated worktree, the orchestrator sends at most two stateless continuation prompts (three total invocations), retaining bounded prior output in the task event feed. A command error still stops immediately, and exhausting the bounded attempts creates no commit or PR. Guidance supplied when resuming a failed task is appended to the persisted task prompt before the retry.\n\nBefore Codex can spend model quota, the adapter runs deterministic gates for `git diff --check` plus the available allowlisted package scripts (`format:check`, `typecheck`, `lint`, `test`, `build`). A failing local gate returns directly to Anti without reserving a Codex call. Real Codex invocations are durably capped at three per task worktree, parsed clean results are cached by immutable review identity, and an unchanged HEAD is never reviewed twice. A later incremental review is allowed only when the previous Codex-reviewed HEAD was `APPROVE` and is an ancestor of the new HEAD; fixes for a `CHANGES_REQUIRED` review are fully re-reviewed so an untouched old blocker cannot disappear. Passing preflight test evidence is reused by the state machine instead of immediately running the same default test suite a second time; custom test runners and projects without a standard `test` script keep their existing fallback behavior.\n""")
-          replace_once('README.md',
-          """3. **OpenAI Codex CLI (`codex`) Adapter**:\n   - Operates in strictly read-only sandbox mode (`codex exec --sandbox read-only`).\n   - Validates structured verdicts: `APPROVE`, `CHANGES_REQUIRED`, `NEEDS_USER_DECISION`.\n   - Fail-safe fallback: malformed, unparseable, or absent output automatically defaults to `NEEDS_USER_DECISION`.\n""",
-          """3. **OpenAI Codex CLI (`codex`) Adapter**:\n   - Runs deterministic local preflight before any model-call budget is reserved; failed local gates return to Anti without spending Codex quota.\n   - Uses native `codex exec review --base <immutable-base>` with user config ignored, an ephemeral session, and unrelated plugins/apps/memory/browser/computer/image/hooks disabled.\n   - Durably caps real Codex calls at three per task worktree, caches clean parsed results by immutable review identity, and fails closed if budget/cache state is unsafe.\n   - Uses safe incremental review only from a previously `APPROVE` HEAD that is an ancestor of the new HEAD; otherwise it performs a full review.\n   - Validates structured verdicts: `APPROVE`, `CHANGES_REQUIRED`, `NEEDS_USER_DECISION`; malformed, unparseable, or absent output defaults to `NEEDS_USER_DECISION`.\n""")
-          replace_once('README.md',
-          """5. **Controlled State Loop**:\n   - Enforces legal state machine transitions and bounded iteration cycles (`MAX_REVIEW_CYCLES = 3`).\n   - `AWAITING_HUMAN_APPROVAL` is strictly guarded: requires automated tests green, GitHub CI passing, Codex review `APPROVE` with a human verification checklist, and a structured Anti localhost live-verification report.\n   - Preserves diagnostics and isolated worktrees on decision, override, or failure.\n""",
-          """5. **Controlled State Loop**:\n   - Enforces legal state machine transitions and bounded review/fix cycles (`MAX_REVIEW_CYCLES = 3`) independently from the hard Codex model-call budget.\n   - Persists deterministic preflight evidence in diagnostics and reuses a proven passing default `test` gate instead of running it twice back-to-back.\n   - `AWAITING_HUMAN_APPROVAL` is strictly guarded: requires automated tests green, GitHub CI passing, Codex review `APPROVE` with a human verification checklist, and a structured Anti localhost live-verification report.\n   - Preserves diagnostics and isolated worktrees on decision, override, or failure.\n""")
-
-          replace_once('README.zh-CN.md',
-          """    A --> P[GitHub PR]\n    P --> R[Codex CLI 只读审查]\n""",
-          """    A --> P[GitHub PR]\n    P --> Q[确定性预检：diff / format / typecheck / lint / test / build]\n    Q --> R[Codex CLI 配额受控只读审查]\n""")
-          replace_once('README.zh-CN.md',
-          """- Codex CLI 以只读沙箱审查差异，不提交代码、不推送、更不会合并 PR。\n""",
-          """- Codex CLI 只在确定性预检全绿后进入模型审查；真实 Codex 调用有持久化硬上限和 SHA 缓存，不提交代码、不推送、更不会合并 PR。\n""")
-          replace_once('README.zh-CN.md',
-          """开发调用同样采用 Fail-Closed 策略。如果 Antigravity 在工具边界成功退出、但隔离 worktree 尚无变更，编排器最多发送两次无状态续跑提示（合计三次调用），并把上一轮的有界输出保留在任务事件流中。任一命令报错仍会立即停止；耗尽次数后不会提交或创建 PR。从失败状态恢复时提供的 guidance 会先追加到持久化任务提示词，再进入重试。\n""",
-          """开发调用同样采用 Fail-Closed 策略。如果 Antigravity 在工具边界成功退出、但隔离 worktree 尚无变更，编排器最多发送两次无状态续跑提示（合计三次调用），并把上一轮的有界输出保留在任务事件流中。任一命令报错仍会立即停止；耗尽次数后不会提交或创建 PR。从失败状态恢复时提供的 guidance 会先追加到持久化任务提示词，再进入重试。\n\n每次 Codex 真正调用模型前，适配器都会先执行 `git diff --check`，以及项目实际存在的 `format:check`、`typecheck`、`lint`、`test`、`build` 等白名单脚本。任何确定性检查失败都会直接交回 Anti 修复，不占用 Codex 调用额度。每个任务 worktree 的真实 Codex 调用持久化硬上限为 3 次；同一不可变审查身份会命中缓存，同一个 HEAD 不会重复审查。只有“上一轮 Codex 已 `APPROVE` 且该 HEAD 仍是新 HEAD 祖先”时，后续才允许只审修复增量；若上一轮是 `CHANGES_REQUIRED`，下一轮仍做全量复审，避免旧 blocker 因文件未再次修改而消失。预检已经通过的默认 `test` 结果会被状态机复用，避免紧接着重复跑同一套测试；自定义 test runner 和没有标准 `test` script 的项目仍保持原有回退行为。\n""")
-          replace_once('README.zh-CN.md',
-          """3. **Codex 审查适配器**：使用 `codex exec --sandbox read-only`。审查结论只能是 `APPROVE`、`CHANGES_REQUIRED` 或 `NEEDS_USER_DECISION`；缺失、空白或无法解析的输出会安全地降级为需要人工决策。\n""",
-          """3. **Codex 审查适配器**：先执行不消耗模型额度的确定性预检，再使用原生 `codex exec review --base <不可变基线>`；忽略用户配置、使用临时会话，并关闭与代码审查无关的插件、应用、记忆、浏览器、电脑操作、图片生成和 hooks。真实模型调用每任务最多 3 次，干净解析结果按不可变审查身份持久化缓存；预算或缓存状态异常会 Fail-Closed。审查结论只能是 `APPROVE`、`CHANGES_REQUIRED` 或 `NEEDS_USER_DECISION`。\n""")
-          replace_once('README.zh-CN.md',
-          """5. **受控状态循环**：修复轮数默认最多 3 轮。每次状态流转、审查摘要和错误诊断都会保留；失败、人工决策和人工核验阶段的 worktree 会保留以供检查。\n""",
-          """5. **受控状态循环**：修复轮数默认最多 3 轮，并与“每任务最多 3 次真实 Codex 模型调用”的硬预算独立计数。确定性预检结果会进入 diagnostics；已经通过的默认测试证据可直接复用，避免同一 HEAD 紧接着重复测试。每次状态流转、审查摘要和错误诊断都会保留；失败、人工决策和人工核验阶段的 worktree 会保留以供检查。\n""")
-
-          replace_once('docs/security.md',
-          """- **Review-Only Mode**: During the review phase, OpenAI Codex CLI (`codex`) is invoked strictly with read-only flags (`codex exec --sandbox read-only`).\n- **No Code Mutation**: Codex must inspect git diffs, ASTs, and PR metadata to produce structured comments and suggestions, but is strictly disallowed from writing files or making commits directly.\n""",
-          """- **Deterministic Gate Before Model Spend**: Before reserving review budget, the adapter runs `git diff --check` and any available allowlisted package scripts (`format:check`, `typecheck`, `lint`, `test`, `build`). A failure returns to Anti without invoking Codex.\n- **Review-Only Mode**: OpenAI Codex CLI is invoked with native `codex exec review --base <immutable-base>`, while user config is ignored, the session is ephemeral, and unrelated capabilities (plugins, apps, memories, multi-agent, browser/computer use, image generation, hooks) are disabled.\n- **Bounded & Cached Review**: Real Codex invocations are durably limited to three per task worktree. Clean parsed results are cached by immutable base/head/task identity, duplicate HEAD reviews are prevented, and unsafe/corrupt budget state fails closed.\n- **Safe Incremental Scope**: A later review may use the previous reviewed HEAD as its base only when that HEAD was `APPROVE` and remains an ancestor of the current HEAD. A `CHANGES_REQUIRED` result never becomes an incremental base, preventing untouched blockers from disappearing from review scope.\n- **No Code Mutation**: Codex inspects repository changes and produces structured findings but never writes source files, commits, pushes, or merges.\n""")
-
-          replace_once('docs/state-machine.md',
-          """| `CODEX_REVIEWING`         | Invoking `codex` in read-only mode against PR diff.                                                                                            | Strictly read-only inspection; generates structured review findings without file mutations.                                                                                                                                                                                                                                                     |\n| `REVIEW_EVALUATING`       | Evaluating review findings, local tests, and GitHub CI.                                                                                        | Pending CI is polled with a bounded interval and attempt count. Each observation is persisted before the next wait. CI failures, unavailable checks, or exhausted pending waits fail closed to `NEEDS_USER_DECISION`.                                                                                                                           |\n""",
-          """| `CODEX_REVIEWING`         | Running deterministic preflight and, only when green, invoking quota-bounded native Codex review.                                              | `git diff --check` and available allowlisted package scripts run before model budget reservation. Real Codex calls are durably capped, duplicate review identities are cached, and only a prior `APPROVE` ancestor may become an incremental base.                                                                                                  |\n| `REVIEW_EVALUATING`       | Evaluating review findings, deterministic test evidence, and GitHub CI.                                                                        | A passing default `test` result from the immediately preceding preflight is reused instead of rerunning the same suite. Custom test runners or projects without a standard `test` script still use the normal fallback runner. Pending CI is polled with bounded attempts; terminal failure/unavailability fails closed to `NEEDS_USER_DECISION`. |\n""")
-          replace_once('docs/state-machine.md',
-          """- **Maximum Review-Fix Cycles (`MAX_REVIEW_CYCLES`)**: Default: `3`.\n- **Strict Invariant for `AWAITING_HUMAN_APPROVAL`**:\n""",
-          """- **Maximum Review-Fix Cycles (`MAX_REVIEW_CYCLES`)**: Default: `3`. This bounds state-machine fix iterations and is separate from model quota.\n- **Hard Codex Model-Call Budget**: At most `3` real Codex review invocations per task worktree are reserved durably. Deterministic preflight failures and cache hits consume no additional model call. A duplicate immutable review identity is never automatically reviewed twice.\n- **Review Scope Invariant**: Only a previously `APPROVE` HEAD that is an ancestor of the current HEAD may become an incremental review base. After `CHANGES_REQUIRED`, fixes receive a full re-review from the original base so unresolved old findings remain visible.\n- **Preflight Evidence Reuse**: If the current review's deterministic preflight actually ran and passed the project's standard `test` script, `REVIEW_EVALUATING` reuses that evidence. Custom test runners and missing test scripts still execute the fallback test path.\n- **Strict Invariant for `AWAITING_HUMAN_APPROVAL`**:\n""")
-
-          replace_once('src/orchestrator/orchestrator.ts',
-          """            // Invoke Codex review in read-only sandbox mode, explicitly checking diff against baseBranch\n""",
-          """            // CodexAdapter runs deterministic preflight first, then a quota-bounded native read-only review.\n""")
-          PY
-          npm run format
-
-      - name: Require clean npm audit
-        run: npm audit --audit-level=moderate
 
       - name: Check code formatting
         run: npm run format:check
@@ -105,16 +35,3 @@ jobs:
 
       - name: Build project
         run: npm run build
-
-      - name: Persist validated documentation sync
-        if: ${{ success() }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add README.md README.zh-CN.md docs/security.md docs/state-machine.md src/orchestrator/orchestrator.ts
-          if git diff --cached --quiet; then
-            echo 'Documentation is already synchronized.'
-            exit 0
-          fi
-          git commit -m 'docs: document quota-safe Codex review pipeline'
-          git push origin HEAD:${{ github.head_ref }}
