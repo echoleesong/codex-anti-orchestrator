@@ -55,7 +55,9 @@ export async function runDeterministicPreflight(
 
   let packageJson: { scripts?: Record<string, unknown> };
   try {
-    const parsed = JSON.parse(await readFile(path.join(worktreePath, 'package.json'), 'utf8')) as unknown;
+    const parsed = JSON.parse(
+      await readFile(path.join(worktreePath, 'package.json'), 'utf8')
+    ) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error('package.json root must be an object');
     }
@@ -72,7 +74,9 @@ export async function runDeterministicPreflight(
     if (errorCode(error) === 'ENOENT') {
       return { pass: errors.length === 0, checks, errors };
     }
-    errors.push(`package.json preflight failed: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push(
+      `package.json preflight failed: ${error instanceof Error ? error.message : String(error)}`
+    );
     checks.push('package.json parse/read: FAIL');
     return { pass: false, checks, errors };
   }
