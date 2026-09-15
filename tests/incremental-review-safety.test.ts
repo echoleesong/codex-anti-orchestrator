@@ -64,7 +64,11 @@ describe('incremental Codex review safety', () => {
       cacheFile: path.join(worktree, 'review-cache.json'),
       maxCallsPerTask: 3,
     });
-    const options = { worktreePath: worktree, baseBranch: 'main', taskPrompt: 'Implement feature.' };
+    const options = {
+      worktreePath: worktree,
+      baseBranch: 'main',
+      taskPrompt: 'Implement feature.',
+    };
 
     expect((await adapter.review(options)).verdict).toBe('CHANGES_REQUIRED');
     await writeFile(path.join(worktree, '.git', 'HEAD'), `${secondHead}\n`);
