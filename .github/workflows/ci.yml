@@ -51,8 +51,8 @@ jobs:
           """export type CodexVerdict = 'APPROVE' | 'CHANGES_REQUIRED' | 'NEEDS_USER_DECISION';\n\nexport interface DeterministicPreflightEvidence {\n  pass: boolean;\n  checks: string[];\n  errors: string[];\n  testScriptPresent: boolean;\n  testPassed?: boolean;\n}\n\nexport interface CodexReviewResult {\n""")
 
           replace_once('src/types.ts',
-          """  parsedCleanly: boolean;\n  rawOutput?: string;\n}\n""",
-          """  parsedCleanly: boolean;\n  rawOutput?: string;\n  preflight?: DeterministicPreflightEvidence;\n}\n""")
+          """export interface CodexReviewResult {\n  verdict: CodexVerdict;\n  summary: string;\n  blockingIssues: string[];\n  warnings: string[];\n  humanVerificationChecklist: string[];\n  parsedCleanly: boolean;\n  rawOutput?: string;\n}\n""",
+          """export interface CodexReviewResult {\n  verdict: CodexVerdict;\n  summary: string;\n  blockingIssues: string[];\n  warnings: string[];\n  humanVerificationChecklist: string[];\n  parsedCleanly: boolean;\n  rawOutput?: string;\n  preflight?: DeterministicPreflightEvidence;\n}\n""")
 
           replace_once('src/adapters/deterministic-preflight.ts',
           """import type { CommandExecutor } from '../types.js';\n""",
