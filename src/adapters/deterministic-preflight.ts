@@ -53,11 +53,21 @@ export async function runDeterministicPreflight(
     }
   }
 
-  let packageJson: { scripts?: Record<string, unknown> } | undefined;
+  let packageJson: { scripts?: Record<string, unknown> };
   try {
-    packageJson = JSON.parse(
-      await readFile(path.join(worktreePath, 'package.json'), 'utf8')
-    ) as { scripts?: Record<string, unknown> };
+    const parsed = JSON.parse(await readFile(path.join(worktreePath, 'package.json'), 'utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('package.json root must be an object');
+    }
+
+    const rawScripts = (parsed as Record<string, unknown>).scripts;
+    if (
+      rawScripts !== undefined &&
+      (!rawScripts || typeof rawScripts !== 'object' || Array.isArray(rawScripts))
+    ) {
+      throw new Error('package.json scripts must be an object when present');
+    }
+    packageJson = { scripts: rawScripts as Record<string, unknown> | undefined };
   } catch (error) {
     if (errorCode(error) === 'ENOENT') {
       return { pass: errors.length === 0, checks, errors };
