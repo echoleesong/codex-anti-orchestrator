@@ -95,8 +95,8 @@ jobs:
           """          rawOutput: reviewOutput || execResult.stderr,\n        };\n""",
           """          rawOutput: reviewOutput || execResult.stderr,\n          preflight,\n        };\n""")
           replace_once('src/adapters/codex-adapter.ts',
-          """          rawOutput: '',\n        };\n      }\n\n      const taskRequirement\n""",
-          """          rawOutput: '',\n          preflight,\n        };\n      }\n\n      const taskRequirement\n""")
+          """          rawOutput: '',\n        };\n      }\n\n      const taskRequirement = options.taskPrompt?.trim();\n""",
+          """          rawOutput: '',\n          preflight,\n        };\n      }\n\n      const taskRequirement = options.taskPrompt?.trim();\n""")
           replace_once('src/adapters/codex-adapter.ts',
           """            rawOutput: result.rawOutput,\n          };\n""",
           """            rawOutput: result.rawOutput,\n            preflight,\n          };\n""")
